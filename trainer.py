@@ -59,7 +59,7 @@ if __name__ == "__main__":
     print("=============================================")
 
     # 1. Load the SNAP Dataset (This handles the download, mapping, and temporal split)
-    train_loader, val_loader, test_loader, num_nodes = get_dataloaders('alpha', batch_size=1024)
+    train_loader, val_loader, test_loader, num_nodes = get_dataloaders('otc', batch_size=1024)
 
     # 2. Initialize the Stage 2 Projector Network
     aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)

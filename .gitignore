@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data files
+*.csv
+*.csv.gz
+data/
+
+# Checkpoints / Weights
+.ipynb_checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
