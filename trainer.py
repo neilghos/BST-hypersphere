@@ -6,7 +6,7 @@ from BSTspace import Stage1_BST_Optimizer
 # Assuming you saved the previous blocks in these files:
 # pyrefly: ignore [missing-import]
 from dataloader import get_dataloaders
-from nodealligner import Stage2_NodeAligner, stage2_pure_positive_loss
+from nodealligner import Stage2_NodeAligner, stage2_pure_positive_loss, stage2_pairwise_auc_loss
 from evaluator import SNAPEval, evaluate_pipeline
 
 if __name__ == "__main__":
@@ -59,43 +59,53 @@ if __name__ == "__main__":
     print("=============================================")
 
     # 1. Load the SNAP Dataset (This handles the download, mapping, and temporal split)
-    train_loader, val_loader, test_loader, num_nodes = get_dataloaders('otc', batch_size=1024)
+    train_loader, val_loader, test_loader, num_nodes = get_dataloaders('alpha', batch_size=1024)
 
     # 2. Initialize the Stage 2 Projector Network
     aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)
     optimizer_s2 = torch.optim.Adam(aligner.parameters(), lr=0.005)
 
     # 3. Stage 2 Training Loop (Pure Positive Pull)
-    epochs_s2 = 100
-    print("\n--- Starting Stage 2 Pure Positive Alignment ---")
+    print("\n--- Starting Stage 2: Pairwise AUC Optimization ---")
     aligner.train()
 
+    epochs_s2 = 100
     for epoch in range(epochs_s2):
         epoch_loss = 0.0
         
         for batch in train_loader:
-            # Move batch data to GPU
             sources = batch['source'].to(device)
             targets = batch['target'].to(device)
             ratings = batch['rating'].to(device)
             
+            # Grab the Trust Backbone
+            pos_mask = ratings > 0
+            if not pos_mask.any():
+                continue
+                
+            u_pos = sources[pos_mask]
+            v_pos = targets[pos_mask]
+            
+            # --- THE MAGIC: Dynamic Negative Edge Augmentation ---
+            # For every real target, generate a random "fake" target
+            v_neg = torch.randint(0, num_nodes, (len(u_pos),), device=device)
+            
             optimizer_s2.zero_grad()
             
-            # Forward pass: Project nodes to the hypersphere
-            u_embeds = aligner(sources)
-            v_embeds = aligner(targets)
+            # Project all three sets of nodes
+            u_embeds = aligner(u_pos)
+            v_pos_embeds = aligner(v_pos)
+            v_neg_embeds = aligner(v_neg)
             
-            # Apply the Pure Positive Physics pulling nodes to frozen anchors
-            loss_s2 = stage2_pure_positive_loss(u_embeds, v_embeds, ratings, frozen_anchors)
+            # Apply the Pairwise AUC math
+            loss_s2 = stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, frozen_anchors)
             
-            # Backpropagate through the MLP Projector and Embedding Table ONLY
             loss_s2.backward()
             optimizer_s2.step()
             
             epoch_loss += loss_s2.item()
             
-        avg_loss = epoch_loss / len(train_loader)
-        print(f"Stage 2 | Epoch {epoch + 1:2d}/{epochs_s2} | Alignment Loss: {avg_loss:.4f}")
+        print(f"Stage 2 | Epoch {epoch + 1:2d}/{epochs_s2} | AUC Loss: {epoch_loss / len(train_loader):.4f}")
 
     print("\nPipeline Complete: The hypersphere is fully populated.")
 

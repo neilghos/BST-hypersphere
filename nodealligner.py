@@ -75,3 +75,17 @@ def stage2_pure_positive_loss(u_embeds, v_embeds, ratings, anchors):
     return total_loss / len(ratings)
 
 
+def stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, anchors, margin=0.2):
+    # 1. The Direct AUC Optimizer (Pairwise Ranking)
+    pos_scores = F.cosine_similarity(u_embeds, v_pos_embeds, dim=-1)
+    neg_scores = F.cosine_similarity(u_embeds, v_neg_embeds, dim=-1)
+    
+    # BPR / Margin Loss: We want pos_score to be at least 'margin' higher than neg_score
+    auc_loss = torch.relu(margin - (pos_scores - neg_scores)).mean()
+    
+    # 2. Soft Transductive Gravity (Keep the Stage 1 physics alive)
+    # Gently pull the sources to the P1 Trust Anchor so the space doesn't arbitrarily rotate
+    P1 = anchors["P1"].to(u_embeds.device)
+    gravity_loss = (1.0 - F.cosine_similarity(u_embeds, P1.unsqueeze(0), dim=-1)).mean()
+    
+    return auc_loss + (0.1 * gravity_loss)

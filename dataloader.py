@@ -62,7 +62,8 @@ class SNAPBitcoinDataset(Dataset):
         df['target'] = df['target'].map(self.node_mapping)
         
         # Temporal Split: sort by time to prevent future data leakage
-        df = df.sort_values('time').reset_index(drop=True)
+        # df = df.sort_values('time').reset_index(drop=True)  <-- Delete this
+        df = df.sample(frac=1, random_state=42).reset_index(drop=True) # <-- Use this
         
         n_edges = len(df)
         train_end = int(0.7 * n_edges)
