@@ -60,8 +60,10 @@ class SNAPEval:
         else:
             raise ValueError(f"Unknown task_type: {self.task_type}")
 
-def evaluate_pipeline(aligner, dataloader, device, evaluator, split_name="Test"):
+def evaluate_pipeline(aligner, dataloader, device, evaluator, predictor=None, split_name="Test"):
     aligner.eval()
+    if predictor is not None:
+        predictor.eval()
     
     all_preds = []
     all_labels = []
@@ -86,12 +88,17 @@ def evaluate_pipeline(aligner, dataloader, device, evaluator, split_name="Test")
             u_embeds = aligner(sources)
             v_embeds = aligner(targets)
             
-            # 2. Measure raw geometric distance
-            cos_sim = F.cosine_similarity(u_embeds, v_embeds, dim=-1)
-            
-            # 3. The Geometric Shift
-            # Shift the 0.5 equator to 0.0 so it acts as a standard Logit for SNAPEval
-            logits = cos_sim - 0.5
+            if predictor is not None:
+                # Use the Learned Sign Head
+                _, sign_logits = predictor(u_embeds, v_embeds)
+                logits = sign_logits
+            else:
+                # 2. Measure raw geometric distance
+                cos_sim = F.cosine_similarity(u_embeds, v_embeds, dim=-1)
+                
+                # 3. The Geometric Shift
+                # Shift the 0.5 equator to 0.0 so it acts as a standard Logit for SNAPEval
+                logits = cos_sim - 0.5
             
             all_preds.append(logits)
             all_labels.append(ratings) # Pass raw ratings, SNAPEval handles the >0 mapping

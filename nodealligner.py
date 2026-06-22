@@ -89,3 +89,41 @@ def stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, anchors, marg
     gravity_loss = (1.0 - F.cosine_similarity(u_embeds, P1.unsqueeze(0), dim=-1)).mean()
     
     return auc_loss + (0.1 * gravity_loss)
+
+class HierarchicalPredictor(nn.Module):
+    def __init__(self, embed_dim=384):
+        super().__init__()
+        
+        # Input features: Concat(u, v) [dim*2] + Dot Product (u * v) [dim] -> Total: dim * 3
+        in_features = embed_dim * 3
+        
+        # 1. Existence Head (Predicts if edge exists)
+        self.exist_head = nn.Sequential(
+            nn.Linear(in_features, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+        
+        # 2. Sign Head (Predicts Trust vs Distrust)
+        self.sign_head = nn.Sequential(
+            nn.Linear(in_features, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+        
+    def forward(self, u_embeds, v_embeds):
+        # Construct the features
+        concat_feats = torch.cat([u_embeds, v_embeds], dim=-1)
+        dot_feats = u_embeds * v_embeds
+        x = torch.cat([concat_feats, dot_feats], dim=-1)
+        
+        exist_logits = self.exist_head(x).squeeze(-1)
+        sign_logits = self.sign_head(x).squeeze(-1)
+        
+        return exist_logits, sign_logits

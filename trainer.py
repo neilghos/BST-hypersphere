@@ -5,8 +5,9 @@ from BSTspace import Stage1_BST_Optimizer
 
 # Assuming you saved the previous blocks in these files:
 # pyrefly: ignore [missing-import]
+import torch.nn as nn
 from dataloader import get_dataloaders
-from nodealligner import Stage2_NodeAligner, stage2_pure_positive_loss, stage2_pairwise_auc_loss
+from nodealligner import Stage2_NodeAligner, stage2_pure_positive_loss, stage2_pairwise_auc_loss, HierarchicalPredictor
 from evaluator import SNAPEval, evaluate_pipeline
 
 if __name__ == "__main__":
@@ -110,12 +111,81 @@ if __name__ == "__main__":
     print("\nPipeline Complete: The hypersphere is fully populated.")
 
     # ==========================================
-    # STAGE 3: EVALUATION
+    # STAGE 3: SUPERVISED BLAME GAME (HIERARCHICAL)
+    # ==========================================
+    print("\n--- Starting Stage 3: Supervised Blame Game Finetuning ---")
+    predictor = HierarchicalPredictor(embed_dim=384).to(device)
+    
+    # Train both the aligner AND predictor end-to-end
+    optimizer_s3 = torch.optim.Adam(list(aligner.parameters()) + list(predictor.parameters()), lr=0.001)
+    
+    # Binary Cross Entropy for both tasks
+    criterion = nn.BCEWithLogitsLoss()
+    
+    epochs_s3 = 50
+    predictor.train()
+    aligner.train()
+    
+    for epoch in range(epochs_s3):
+        epoch_exist_loss = 0.0
+        epoch_sign_loss = 0.0
+        
+        for batch in train_loader:
+            sources = batch['source'].to(device)
+            targets = batch['target'].to(device)
+            ratings = batch['rating'].to(device)
+            
+            optimizer_s3.zero_grad()
+            
+            # --- Generate Fake Edges ---
+            num_edges = len(sources)
+            fake_targets = torch.randint(0, num_nodes, (num_edges,), device=device)
+            
+            # Combine real and fake
+            all_u = torch.cat([sources, sources], dim=0)
+            all_v = torch.cat([targets, fake_targets], dim=0)
+            
+            # Existence Labels: 1 for Real, 0 for Fake
+            exist_labels = torch.cat([torch.ones(num_edges, device=device), torch.zeros(num_edges, device=device)], dim=0)
+            
+            # --- Forward Pass ---
+            u_embeds = aligner(all_u)
+            v_embeds = aligner(all_v)
+            
+            exist_logits, sign_logits = predictor(u_embeds, v_embeds)
+            
+            # --- 1. Existence Loss (on all edges) ---
+            loss_exist = criterion(exist_logits, exist_labels)
+            
+            # --- 2. Sign Loss (only on Real Edges) ---
+            # Real edges are the first half of the batch
+            real_sign_logits = sign_logits[:num_edges]
+            
+            # Ratings are -10 to +10, map to binary 1 (Trust) and 0 (Distrust)
+            sign_labels = (ratings > 0).float()
+            
+            loss_sign = criterion(real_sign_logits, sign_labels)
+            
+            # The Blame Game Total Loss
+            loss_s3 = loss_exist + loss_sign
+            
+            loss_s3.backward()
+            optimizer_s3.step()
+            
+            epoch_exist_loss += loss_exist.item()
+            epoch_sign_loss += loss_sign.item()
+            
+        print(f"Stage 3 | Epoch {epoch + 1:2d}/{epochs_s3} | Exist Loss: {epoch_exist_loss / len(train_loader):.4f} | Sign Loss: {epoch_sign_loss / len(train_loader):.4f}")
+
+    print("\nPipeline Complete: Predictor fully trained.")
+
+    # ==========================================
+    # STAGE 4: EVALUATION
     # ==========================================
     evaluator = SNAPEval(task_type='sign_prediction')
     
     # Evaluate on Validation Set
-    evaluate_pipeline(aligner, val_loader, device, evaluator, split_name="Validation")
+    evaluate_pipeline(aligner, val_loader, device, evaluator, predictor=predictor, split_name="Validation")
     
     # Evaluate on Test Set
-    evaluate_pipeline(aligner, test_loader, device, evaluator, split_name="Test")
+    evaluate_pipeline(aligner, test_loader, device, evaluator, predictor=predictor, split_name="Test")
