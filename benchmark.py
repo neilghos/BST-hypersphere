@@ -52,7 +52,7 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
     optimizer_s2 = torch.optim.Adam(aligner.parameters(), lr=0.005)
     
     aligner.train()
-    epochs_s2 = 100
+    epochs_s2 = 10
     pbar_s2 = tqdm(range(epochs_s2), desc=f"Stage 2 (Seed {seed})", leave=False, dynamic_ncols=True)
     for epoch in pbar_s2:
         epoch_loss = 0.0
@@ -92,7 +92,7 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
     zero_label_policy = 'positive' if zero_positive else 'negative'
     evaluator = SNAPEval(task_type='sign_prediction', zero_label_policy=zero_label_policy)
     
-    epochs_s3 = 50
+    epochs_s3 = 15
     best_val_acc = float('-inf')
     best_val_threshold = 0.0
     best_epoch = 0

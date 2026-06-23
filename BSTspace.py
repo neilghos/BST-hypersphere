@@ -47,7 +47,7 @@ class Stage1_BST_Optimizer(nn.Module):
         `nn.ParameterDict`. There are no hidden layers because the anchor
         coordinates themselves are the object of optimization.
     """
-    def __init__(self, initial_anchors, neg_margin=0.0):
+    def __init__(self, initial_anchors, neg_margin=0.0, pos_margin=0.8):
         super().__init__()
         
         self.anchors = nn.ParameterDict({
@@ -55,6 +55,7 @@ class Stage1_BST_Optimizer(nn.Module):
         })
         
         self.neg_margin = neg_margin 
+        self.pos_margin = pos_margin
         
     def get_normalized_anchors(self):
         """
@@ -76,11 +77,11 @@ class Stage1_BST_Optimizer(nn.Module):
             2. `A_enemy_1_enemy_2`:
                Push the "enemy of both" anchor away from both poles.
             3. `A_friend_1_friend_2`:
-               Pull the "friend of both" anchor toward both poles.
+               Pull the "friend of both" anchor toward both poles up to pos_margin.
             4. `A_friend_1_enemy_2`:
-               Pull toward `P1`, push away from `P2`.
+               Pull toward `P1` up to pos_margin, push away from `P2`.
             5. `A_enemy_1_friend_2`:
-               Push away from `P1`, pull toward `P2`.
+               Push away from `P1`, pull toward `P2` up to pos_margin.
 
         Goal of the full objective:
             Arrange the anchor system so its cosine geometry encodes the intended
@@ -104,14 +105,14 @@ class Stage1_BST_Optimizer(nn.Module):
         
         A_friend_1_friend_2 = sphere_anchors["A_friend_1_friend_2"]
         cos_P1_F = F.cosine_similarity(P1, A_friend_1_friend_2, dim=0)
-        loss_friend_P1 = 1.0 - cos_P1_F 
+        loss_friend_P1 = torch.relu(self.pos_margin - cos_P1_F) 
         
         cos_P2_F = F.cosine_similarity(P2, A_friend_1_friend_2, dim=0)
-        loss_friend_P2 = 1.0 - cos_P2_F 
+        loss_friend_P2 = torch.relu(self.pos_margin - cos_P2_F) 
 
         A_friend_1_enemy_2 = sphere_anchors["A_friend_1_enemy_2"]
         cos_P1_F1E2 = F.cosine_similarity(P1, A_friend_1_enemy_2, dim=0)
-        loss_F1E2_P1 = 1.0 - cos_P1_F1E2 # Pull to P1
+        loss_F1E2_P1 = torch.relu(self.pos_margin - cos_P1_F1E2) # Pull to P1
         
         cos_P2_F1E2 = F.cosine_similarity(P2, A_friend_1_enemy_2, dim=0)
         loss_F1E2_P2 = torch.relu(cos_P2_F1E2 - self.neg_margin) # Push from P2
@@ -121,7 +122,7 @@ class Stage1_BST_Optimizer(nn.Module):
         loss_E1F2_P1 = torch.relu(cos_P1_E1F2 - self.neg_margin) # Push from P1
         
         cos_P2_E1F2 = F.cosine_similarity(P2, A_enemy_1_friend_2, dim=0)
-        loss_E1F2_P2 = 1.0 - cos_P2_E1F2 # Pull to P2
+        loss_E1F2_P2 = torch.relu(self.pos_margin - cos_P2_E1F2) # Pull to P2
 
         total_bst_loss = (imbalance_loss_1 + 
                           loss_enemy_P1 + loss_enemy_P2 + 
