@@ -25,18 +25,6 @@ def snapshot_state_dict(module):
     return {key: value.detach().cpu().clone() for key, value in module.state_dict().items()}
 
 
-def require_umap():
-    """Import UMAP lazily so the script fails with a clear message if missing."""
-    try:
-        from umap import UMAP
-    except ImportError as exc:
-        raise ImportError(
-            "plot_anchors.py requires the `umap-learn` package. "
-            "Install it in your active environment before running this script."
-        ) from exc
-    return UMAP
-
-
 def train_stage1(stage1_epochs):
     """Run Stage 1 and return the optimized anchor dictionary."""
     print("Loading frozen text tower and encoding anchors...")
@@ -249,74 +237,43 @@ def collect_stage_points(anchor_dict, stage2_aligner, stage3_aligner, node_ids, 
     return anchor_names, anchor_points, stage2_nodes, stage3_nodes
 
 
-def fit_stage_umap(anchor_points, node_points, seed):
-    """Fit UMAP for one stage using anchors plus a sampled node cloud."""
-    UMAP = require_umap()
-    combined = np.vstack([anchor_points, node_points])
-
-    reducer = UMAP(
-        n_components=2,
-        n_neighbors=min(30, max(5, len(combined) - 1)),
-        min_dist=0.15,
-        metric="cosine",
-        random_state=seed,
-    )
-    coords = reducer.fit_transform(combined)
-
-    num_anchors = len(anchor_points)
-    anchor_coords = coords[:num_anchors]
-    node_coords = coords[num_anchors:]
-    return anchor_coords, node_coords
-
-
-def fit_anchor_umap(anchor_points, seed):
-    """Fit UMAP on the anchor set alone to define the Stage 1 reference frame."""
-    UMAP = require_umap()
-    reducer = UMAP(
-        n_components=2,
-        n_neighbors=min(5, max(2, len(anchor_points) - 1)),
-        min_dist=0.15,
-        metric="cosine",
-        random_state=seed,
-    )
-    return reducer.fit_transform(anchor_points)
-
-def align_stage_to_reference(reference_anchor_coords, stage_anchor_coords, stage_node_coords):
+def build_semantic_basis(anchor_dict):
     """
-    Align one stage's 2D embedding back to the Stage 1 anchor frame.
+    Build a fixed 2D semantic basis directly from the optimized Stage 1 anchors.
 
-    UMAP is fit separately for each stage, so its 2D axes are arbitrary. We use
-    the shared anchor identities to estimate a similarity transform that rotates,
-    rescales, and recenters the stage coordinates onto the Stage 1 layout.
+    x-axis:
+        trust vs malicious polarity, using the direction P1 - P2
+
+    y-axis:
+        common-friend vs common-enemy balance, using the direction
+        A_friend_1_friend_2 - A_enemy_1_enemy_2 and orthogonalizing it against x
     """
-    ref_center = reference_anchor_coords.mean(axis=0, keepdims=True)
-    stage_center = stage_anchor_coords.mean(axis=0, keepdims=True)
+    p1 = anchor_dict["P1"].detach().cpu()
+    p2 = anchor_dict["P2"].detach().cpu()
+    friend_both = anchor_dict["A_friend_1_friend_2"].detach().cpu()
+    enemy_both = anchor_dict["A_enemy_1_enemy_2"].detach().cpu()
 
-    ref_centered = reference_anchor_coords - ref_center
-    stage_centered = stage_anchor_coords - stage_center
+    axis_x = p1 - p2
+    axis_x = axis_x / axis_x.norm(p=2).clamp_min(1e-8)
 
-    ref_scale = np.sqrt((ref_centered ** 2).sum())
-    stage_scale = np.sqrt((stage_centered ** 2).sum())
+    raw_y = friend_both - enemy_both
+    raw_y = raw_y - torch.dot(raw_y, axis_x) * axis_x
+    if raw_y.norm(p=2) < 1e-8:
+        fallback = (
+            anchor_dict["A_friend_1_enemy_2"].detach().cpu()
+            - anchor_dict["A_enemy_1_friend_2"].detach().cpu()
+        )
+        raw_y = fallback - torch.dot(fallback, axis_x) * axis_x
+    axis_y = raw_y / raw_y.norm(p=2).clamp_min(1e-8)
 
-    if ref_scale < 1e-8 or stage_scale < 1e-8:
-        return stage_anchor_coords, stage_node_coords
+    return axis_x.numpy(), axis_y.numpy()
 
-    ref_norm = ref_centered / ref_scale
-    stage_norm = stage_centered / stage_scale
 
-    u, _, vt = np.linalg.svd(stage_norm.T @ ref_norm)
-    rotation = u @ vt
-    if np.linalg.det(rotation) < 0:
-        vt[-1, :] *= -1
-        rotation = u @ vt
-
-    def transform(coords):
-        centered = coords - stage_center
-        normalized = centered / stage_scale
-        rotated = normalized @ rotation
-        return rotated * ref_scale + ref_center
-
-    return transform(stage_anchor_coords), transform(stage_node_coords)
+def project_to_semantic_plane(points, axis_x, axis_y):
+    """Project hypersphere points onto the fixed semantic plane."""
+    x_coords = points @ axis_x
+    y_coords = points @ axis_y
+    return np.column_stack([x_coords, y_coords])
 
 
 def draw_panel(ax, title, anchor_coords, anchor_names, node_coords=None):
@@ -358,8 +315,8 @@ def draw_panel(ax, title, anchor_coords, anchor_names, node_coords=None):
     ax.set_yticks([])
 
 
-def plot_umap_evolution(dataset, anchor_names, anchor_coords, stage2_coords, stage3_coords, output_path):
-    """Render Stage 1/2/3 panels after aligning each stage to the Stage 1 anchor frame."""
+def plot_semantic_evolution(dataset, anchor_names, anchor_coords, stage2_coords, stage3_coords, output_path):
+    """Render Stage 1/2/3 panels in one fixed semantic coordinate system."""
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
     draw_panel(axes[0], "Stage 1: Anchor Geometry", anchor_coords, anchor_names)
@@ -381,7 +338,7 @@ def plot_umap_evolution(dataset, anchor_names, anchor_coords, stage2_coords, sta
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False)
 
-    fig.suptitle(f"BST Hypersphere Evolution via UMAP ({dataset})", fontsize=14)
+    fig.suptitle(f"BST Hypersphere Evolution in a Fixed Semantic Plane ({dataset})", fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.94])
     output_dir = os.path.dirname(output_path)
     if output_dir:
@@ -391,7 +348,7 @@ def plot_umap_evolution(dataset, anchor_names, anchor_coords, stage2_coords, sta
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot BST anchor/node evolution with UMAP")
+    parser = argparse.ArgumentParser(description="Plot BST anchor/node evolution in a fixed semantic plane")
     parser.add_argument(
         "--dataset",
         type=str,
@@ -403,7 +360,7 @@ def main():
     parser.add_argument("--stage1-epochs", type=int, default=500)
     parser.add_argument("--stage2-epochs", type=int, default=10)
     parser.add_argument("--stage3-epochs", type=int, default=15)
-    parser.add_argument("--max-nodes", type=int, default=600)
+    parser.add_argument("--max-nodes", type=int, default=1200)
     parser.add_argument("--output", type=str, default=None)
     args = parser.parse_args()
 
@@ -443,23 +400,13 @@ def main():
         node_ids,
         device,
     )
-    stage1_coords = fit_anchor_umap(anchor_points, args.seed)
-    stage2_anchor_coords, raw_stage2_coords = fit_stage_umap(anchor_points, stage2_nodes, args.seed + 1)
-    stage3_anchor_coords, raw_stage3_coords = fit_stage_umap(anchor_points, stage3_nodes, args.seed + 2)
+    axis_x, axis_y = build_semantic_basis(frozen_anchors)
+    stage1_coords = project_to_semantic_plane(anchor_points, axis_x, axis_y)
+    stage2_coords = project_to_semantic_plane(stage2_nodes, axis_x, axis_y)
+    stage3_coords = project_to_semantic_plane(stage3_nodes, axis_x, axis_y)
 
-    _, stage2_coords = align_stage_to_reference(
-        stage1_coords,
-        stage2_anchor_coords,
-        raw_stage2_coords,
-    )
-    _, stage3_coords = align_stage_to_reference(
-        stage1_coords,
-        stage3_anchor_coords,
-        raw_stage3_coords,
-    )
-
-    output_path = args.output or os.path.join("results", f"umap_evolution_{args.dataset}.png")
-    plot_umap_evolution(
+    output_path = args.output or os.path.join("results", f"semantic_plane_evolution_{args.dataset}.png")
+    plot_semantic_evolution(
         args.dataset,
         anchor_names,
         stage1_coords,
@@ -467,7 +414,7 @@ def main():
         stage3_coords,
         output_path,
     )
-    print(f"Saved UMAP evolution plot to {output_path}")
+    print(f"Saved semantic-plane evolution plot to {output_path}")
 
 
 if __name__ == "__main__":
