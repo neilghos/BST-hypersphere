@@ -199,6 +199,8 @@ class SNAPBitcoinDataset(Dataset):
         else:
             raise ValueError("Unknown file format")
         
+        # Build one stable node universe per raw file. This keeps the setup
+        # fixed-node/closed-world, but does not by itself mix train/test edges.
         all_nodes = pd.concat([df['source'], df['target']]).unique()
         self.node_mapping = {old_id: new_id for new_id, old_id in enumerate(all_nodes)}
         self.num_nodes = len(self.node_mapping)
@@ -207,6 +209,8 @@ class SNAPBitcoinDataset(Dataset):
         df['target'] = df['target'].map(self.node_mapping)
         
         if split != 'all':
+            # Each split dataset is instantiated separately, so the same seed must
+            # reproduce identical pair assignments across train/val/test loaders.
             split_df = _split_by_directed_pair(df, seed)
             if split == 'train':
                 df = split_df[split_df['split'] == 'train'].drop(columns=['split'])
@@ -256,6 +260,8 @@ def get_dataloaders(data_type='alpha', batch_size=1024, root_dir='./data', seed=
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
     sampling_metadata = {
+        # Stage 2/3 sampling blocks validation and test directed pairs so held-out
+        # edges are never injected back as random negatives during training.
         'heldout_targets_by_source': _build_target_lookup_from_tensors(
             (val_ds.sources, val_ds.targets),
             (test_ds.sources, test_ds.targets),

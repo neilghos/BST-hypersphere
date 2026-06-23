@@ -33,9 +33,15 @@ def set_seed(seed):
     np.random.seed(seed)
 
 
+def snapshot_state_dict(module):
+    """Clone a module state dict onto CPU for safe checkpoint selection."""
+    return {key: value.detach().cpu().clone() for key, value in module.state_dict().items()}
+
+
 def run_single_experiment(dataset, seed, device, frozen_anchors):
     """Run one full Stage 2 + Stage 3 experiment and return test metrics."""
     set_seed(seed)
+    zero_positive = dataset in {'wiki-rfa', 'wiki-elec'}
     
     train_loader, val_loader, test_loader, num_nodes, sampling_metadata = get_dataloaders(
         dataset, batch_size=1024, seed=seed
@@ -56,7 +62,7 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
             targets = batch['target'].to(device)
             ratings = batch['rating'].to(device)
             
-            pos_mask = ratings > 0
+            pos_mask = ratings >= 0 if zero_positive else ratings > 0
             if not pos_mask.any():
                 continue
             
@@ -83,15 +89,22 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
     predictor = HierarchicalPredictor(embed_dim=384).to(device)
     optimizer_s3 = torch.optim.Adam(list(aligner.parameters()) + list(predictor.parameters()), lr=0.001)
     criterion = nn.BCEWithLogitsLoss()
+    zero_label_policy = 'positive' if zero_positive else 'negative'
+    evaluator = SNAPEval(task_type='sign_prediction', zero_label_policy=zero_label_policy)
     
-    predictor.train()
-    aligner.train()
     epochs_s3 = 50
+    best_val_acc = float('-inf')
+    best_val_threshold = 0.0
+    best_epoch = 0
+    best_aligner_state = snapshot_state_dict(aligner)
+    best_predictor_state = snapshot_state_dict(predictor)
     pbar_s3 = tqdm(range(epochs_s3), desc=f"Stage 3 (Seed {seed})", leave=False, dynamic_ncols=True)
     for epoch in pbar_s3:
         epoch_exist_loss = 0.0
         epoch_sign_loss = 0.0
         num_batches = 0
+        predictor.train()
+        aligner.train()
         for batch in train_loader:
             sources = batch['source'].to(device)
             targets = batch['target'].to(device)
@@ -114,7 +127,7 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
             
             loss_exist = criterion(exist_logits, exist_labels)
             real_sign_logits = sign_logits[:num_edges]
-            sign_labels = (ratings > 0).float()
+            sign_labels = (ratings >= 0).float() if zero_positive else (ratings > 0).float()
             loss_sign = criterion(real_sign_logits, sign_labels)
             
             loss_s3 = loss_exist + loss_sign
@@ -124,25 +137,50 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
             epoch_exist_loss += loss_exist.item()
             epoch_sign_loss += loss_sign.item()
             num_batches += 1
+
+        _, val_labels, val_preds = evaluate_pipeline(
+            aligner,
+            val_loader,
+            device,
+            evaluator,
+            predictor=predictor,
+            split_name="Validation",
+            return_raw=True,
+            verbose=False,
+        )
+        val_threshold = evaluator.find_best_threshold(val_labels, val_preds, metric='acc')
+        val_metrics = evaluator.eval(
+            {
+                'y_true': val_labels,
+                'y_pred': val_preds,
+            },
+            threshold=val_threshold,
+        )
+
+        if val_metrics['acc'] > best_val_acc:
+            best_val_acc = val_metrics['acc']
+            best_val_threshold = val_threshold
+            best_epoch = epoch + 1
+            best_aligner_state = snapshot_state_dict(aligner)
+            best_predictor_state = snapshot_state_dict(predictor)
             
         pbar_s3.set_postfix({
             'Exist': f"{epoch_exist_loss/max(1, num_batches):.4f}", 
-            'Sign': f"{epoch_sign_loss/max(1, num_batches):.4f}"
+            'Sign': f"{epoch_sign_loss/max(1, num_batches):.4f}",
+            'ValAcc': f"{val_metrics['acc']:.4f}",
+            'BestAcc': f"{best_val_acc:.4f}",
         })
     pbar_s3.close()
-    
-    evaluator = SNAPEval(task_type='sign_prediction')
-    
-    _, val_labels, val_preds = evaluate_pipeline(
-        aligner, val_loader, device, evaluator, predictor=predictor, 
-        split_name="Validation (Untuned)", return_raw=True
+    aligner.load_state_dict(best_aligner_state)
+    predictor.load_state_dict(best_predictor_state)
+    print(
+        f"Restored best Stage 3 checkpoint from epoch {best_epoch} "
+        f"(Val Acc: {best_val_acc:.4f}, Threshold: {best_val_threshold:.4f})"
     )
-    best_t = evaluator.find_best_threshold(val_labels, val_preds, metric='acc')
-    print(f"Tuned Threshold for Accuracy: {best_t:.4f}")
     
     test_metrics = evaluate_pipeline(
         aligner, test_loader, device, evaluator, predictor=predictor, 
-        split_name="Test", threshold=best_t
+        split_name="Test", threshold=best_val_threshold
     )
     
     return test_metrics

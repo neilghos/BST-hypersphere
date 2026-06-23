@@ -16,6 +16,11 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
 
+
+def snapshot_state_dict(module):
+    """Clone a module state dict onto CPU for safe checkpoint selection."""
+    return {key: value.detach().cpu().clone() for key, value in module.state_dict().items()}
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
@@ -80,6 +85,7 @@ if __name__ == "__main__":
 
     for ds_name in datasets_to_run:
         print(f"\n{'='*60}\n   RUNNING DATASET: {ds_name.upper()}\n{'='*60}")
+        zero_positive = ds_name in {'wiki-rfa', 'wiki-elec'}
 
 
         print("\n=============================================")
@@ -95,7 +101,7 @@ if __name__ == "__main__":
         print("\n--- Starting Stage 2: Pairwise AUC Optimization ---")
         aligner.train()
 
-        epochs_s2 = 100
+        epochs_s2 = 10
         for epoch in range(epochs_s2):
             epoch_loss = 0.0
 
@@ -104,7 +110,7 @@ if __name__ == "__main__":
                 targets = batch['target'].to(device)
                 ratings = batch['rating'].to(device)
 
-                pos_mask = ratings > 0
+                pos_mask = ratings >= 0 if zero_positive else ratings > 0
                 if not pos_mask.any():
                     continue
 
@@ -138,14 +144,21 @@ if __name__ == "__main__":
         optimizer_s3 = torch.optim.Adam(list(aligner.parameters()) + list(predictor.parameters()), lr=0.001)
 
         criterion = nn.BCEWithLogitsLoss()
+        zero_label_policy = 'positive' if zero_positive else 'negative'
+        evaluator = SNAPEval(task_type='sign_prediction', zero_label_policy=zero_label_policy)
 
-        epochs_s3 = 50
-        predictor.train()
-        aligner.train()
+        epochs_s3 = 10
+        best_val_acc = float('-inf')
+        best_val_threshold = 0.0
+        best_epoch = 0
+        best_aligner_state = snapshot_state_dict(aligner)
+        best_predictor_state = snapshot_state_dict(predictor)
 
         for epoch in range(epochs_s3):
             epoch_exist_loss = 0.0
             epoch_sign_loss = 0.0
+            aligner.train()
+            predictor.train()
 
             for batch in train_loader:
                 sources = batch['source'].to(device)
@@ -173,7 +186,7 @@ if __name__ == "__main__":
 
                 real_sign_logits = sign_logits[:num_edges]
 
-                sign_labels = (ratings > 0).float()
+                sign_labels = (ratings >= 0).float() if zero_positive else (ratings > 0).float()
 
                 loss_sign = criterion(real_sign_logits, sign_labels)
 
@@ -185,22 +198,52 @@ if __name__ == "__main__":
                 epoch_exist_loss += loss_exist.item()
                 epoch_sign_loss += loss_sign.item()
 
-            print(f"Stage 3 | Epoch {epoch + 1:2d}/{epochs_s3} | Exist Loss: {epoch_exist_loss / len(train_loader):.4f} | Sign Loss: {epoch_sign_loss / len(train_loader):.4f}")
+            _, val_labels, val_preds = evaluate_pipeline(
+                aligner,
+                val_loader,
+                device,
+                evaluator,
+                predictor=predictor,
+                split_name="Validation",
+                return_raw=True,
+                verbose=False,
+            )
+            val_threshold = evaluator.find_best_threshold(val_labels, val_preds, metric='acc')
+            val_metrics = evaluator.eval(
+                {
+                    'y_true': val_labels,
+                    'y_pred': val_preds,
+                },
+                threshold=val_threshold,
+            )
+
+            if val_metrics['acc'] > best_val_acc:
+                best_val_acc = val_metrics['acc']
+                best_val_threshold = val_threshold
+                best_epoch = epoch + 1
+                best_aligner_state = snapshot_state_dict(aligner)
+                best_predictor_state = snapshot_state_dict(predictor)
+
+            print(
+                f"Stage 3 | Epoch {epoch + 1:2d}/{epochs_s3} | "
+                f"Exist Loss: {epoch_exist_loss / len(train_loader):.4f} | "
+                f"Sign Loss: {epoch_sign_loss / len(train_loader):.4f} | "
+                f"Val Acc: {val_metrics['acc']:.4f} | "
+                f"Val T: {val_threshold:.4f} | "
+                f"Best Val Acc: {best_val_acc:.4f}"
+            )
 
         print("\nPipeline Complete: Predictor fully trained.")
-
-        evaluator = SNAPEval(task_type='sign_prediction')
-
-        _, val_labels, val_preds = evaluate_pipeline(
-            aligner, val_loader, device, evaluator, predictor=predictor, 
-            split_name="Validation (Untuned)", return_raw=True
+        aligner.load_state_dict(best_aligner_state)
+        predictor.load_state_dict(best_predictor_state)
+        print(
+            f"Restored best Stage 3 checkpoint from epoch {best_epoch} "
+            f"(Val Acc: {best_val_acc:.4f}, Threshold: {best_val_threshold:.4f})"
         )
-        best_t = evaluator.find_best_threshold(val_labels, val_preds, metric='acc')
-        print(f"Tuned Threshold for Accuracy: {best_t:.4f}")
 
         test_metrics = evaluate_pipeline(
             aligner, test_loader, device, evaluator, predictor=predictor, 
-            split_name="Test", threshold=best_t
+            split_name="Test", threshold=best_val_threshold
         )
         
         row = {
