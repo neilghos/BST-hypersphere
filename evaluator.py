@@ -4,13 +4,19 @@ import numpy as np
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, mean_squared_error, mean_absolute_error
 
 class SNAPEval:
-    def __init__(self, task_type='sign_prediction'):
+    def __init__(self, task_type='sign_prediction', score_space='logit'):
         """
         task_type: 
             'sign_prediction': binary classification (positive trust vs negative distrust)
             'weight_prediction': regression task for exact rating (-10 to +10)
+        score_space:
+            'logit': y_pred contains raw logits or signed margins
+            'probability': y_pred contains probabilities in [0, 1]
         """
         self.task_type = task_type
+        if score_space not in {'logit', 'probability'}:
+            raise ValueError(f"Unknown score_space: {score_space}")
+        self.score_space = score_space
         
     def find_best_threshold(self, y_true, y_pred, metric='acc'):
         if isinstance(y_true, torch.Tensor):
@@ -20,8 +26,7 @@ class SNAPEval:
             
         binary_true = (y_true > 0).astype(int)
         
-        is_prob = (y_pred >= 0).all() and (y_pred <= 1).all()
-        if is_prob:
+        if self.score_space == 'probability':
             thresholds = np.linspace(0.01, 0.99, 99)
             best_t = 0.5
         else:
@@ -59,20 +64,19 @@ class SNAPEval:
         if self.task_type == 'sign_prediction':
             binary_true = (y_true > 0).astype(int)
             
-            is_prob = (y_pred >= 0).all() and (y_pred <= 1).all()
-            if is_prob:
+            if self.score_space == 'probability':
                 t = threshold if threshold is not None else 0.5
                 pred_binary = (y_pred >= t).astype(int)
-                probs = y_pred
+                probs = np.clip(y_pred, 0.0, 1.0)
             else:
                 t = threshold if threshold is not None else 0.0
                 pred_binary = (y_pred >= t).astype(int)
                 probs = 1 / (1 + np.exp(-np.clip(y_pred, -10, 10))) 
                 
             acc = accuracy_score(binary_true, pred_binary)
-            f1_macro = f1_score(binary_true, pred_binary, average='macro')
-            f1_pos = f1_score(binary_true, pred_binary, pos_label=1)
-            f1_neg = f1_score(binary_true, pred_binary, pos_label=0)
+            f1_macro = f1_score(binary_true, pred_binary, average='macro', zero_division=0)
+            f1_pos = f1_score(binary_true, pred_binary, pos_label=1, zero_division=0)
+            f1_neg = f1_score(binary_true, pred_binary, pos_label=0, zero_division=0)
             
             try:
                 auc = roc_auc_score(binary_true, probs)
