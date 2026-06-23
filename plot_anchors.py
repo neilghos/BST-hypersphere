@@ -1,64 +1,474 @@
-import torch
-import numpy as np
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
+import argparse
 import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn as nn
 
 from anchor import initialize_hypersphere_anchors
 from BSTspace import Stage1_BST_Optimizer
+from dataloader import get_dataloaders, sample_targets_excluding_lookup
+from evaluator import SNAPEval, evaluate_pipeline
+from nodealligner import Stage2_NodeAligner, stage2_pairwise_auc_loss, HierarchicalPredictor
 
-def plot_tsne():
+
+def set_seed(seed):
+    """Set all random seeds for reproducibility."""
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
+
+def snapshot_state_dict(module):
+    """Clone a module state dict onto CPU for safe checkpoint selection."""
+    return {key: value.detach().cpu().clone() for key, value in module.state_dict().items()}
+
+
+def require_umap():
+    """Import UMAP lazily so the script fails with a clear message if missing."""
+    try:
+        from umap import UMAP
+    except ImportError as exc:
+        raise ImportError(
+            "plot_anchors.py requires the `umap-learn` package. "
+            "Install it in your active environment before running this script."
+        ) from exc
+    return UMAP
+
+
+def train_stage1(stage1_epochs):
+    """Run Stage 1 and return the optimized anchor dictionary."""
     print("Loading frozen text tower and encoding anchors...")
     anchor_embeddings = initialize_hypersphere_anchors()
-    
-    print("Running Stage 1 BST Optimization for 500 epochs...")
+
+    print(f"Running Stage 1 BST Optimization for {stage1_epochs} epochs...")
     bst_model = Stage1_BST_Optimizer(anchor_embeddings, neg_margin=0.0)
     optimizer = torch.optim.Adam(bst_model.parameters(), lr=0.01)
-    
-    for epoch in range(500):
+
+    for epoch in range(stage1_epochs):
         optimizer.zero_grad()
         loss = bst_model()
         loss.backward()
         optimizer.step()
-        
-    frozen_anchors = bst_model.get_normalized_anchors()
-    
-    names = list(frozen_anchors.keys())
-    tensors = [frozen_anchors[n].detach().cpu().numpy() for n in names]
-    X = np.stack(tensors)
-    
-    print(f"Plotting {len(names)} anchors using t-SNE...")
-    
-    perplexity = min(3, len(names) - 1)
-    
-    # 2D t-SNE
-    tsne_2d = TSNE(n_components=2, perplexity=perplexity, random_state=42)
-    X_2d = tsne_2d.fit_transform(X)
-    
-    plt.figure(figsize=(10, 8))
-    plt.scatter(X_2d[:, 0], X_2d[:, 1], c='blue', marker='o', s=100)
-    for i, name in enumerate(names):
-        plt.annotate(name, (X_2d[i, 0], X_2d[i, 1]), xytext=(5, 5), textcoords='offset points')
-    plt.title('t-SNE 2D Projection of BST Hypersphere Anchors')
-    plt.grid(True)
-    os.makedirs('results', exist_ok=True)
-    plt.savefig('results/tsne_2d.png')
-    plt.close()
-    
-    # 3D t-SNE
-    tsne_3d = TSNE(n_components=3, perplexity=perplexity, random_state=42)
-    X_3d = tsne_3d.fit_transform(X)
-    
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(X_3d[:, 0], X_3d[:, 1], X_3d[:, 2], c='red', marker='o', s=100)
-    for i, name in enumerate(names):
-        ax.text(X_3d[i, 0], X_3d[i, 1], X_3d[i, 2], name)
-    plt.title('t-SNE 3D Projection of BST Hypersphere Anchors')
-    plt.savefig('results/tsne_3d.png')
-    plt.close()
-    
-    print("Saved t-SNE plots to results/tsne_2d.png and results/tsne_3d.png")
 
-if __name__ == '__main__':
-    plot_tsne()
+        if (epoch + 1) % 50 == 0 or epoch == 0:
+            print(f"Stage 1 | Epoch {epoch + 1:3d}/{stage1_epochs} | Loss: {loss.item():.4f}")
+
+    return bst_model.get_normalized_anchors()
+
+
+def train_stage2(dataset, frozen_anchors, stage2_epochs, batch_size, seed, device):
+    """Train Stage 2 and return the split loaders plus the aligned node model."""
+    zero_positive = dataset in {"wiki-rfa", "wiki-elec"}
+    train_loader, val_loader, test_loader, num_nodes, sampling_metadata = get_dataloaders(
+        dataset, batch_size=batch_size, seed=seed
+    )
+    heldout_targets_by_source = sampling_metadata["heldout_targets_by_source"]
+
+    aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)
+    optimizer = torch.optim.Adam(aligner.parameters(), lr=0.005)
+
+    print(f"Running Stage 2 for {stage2_epochs} epochs...")
+    aligner.train()
+    for epoch in range(stage2_epochs):
+        epoch_loss = 0.0
+        num_batches = 0
+
+        for batch in train_loader:
+            sources = batch["source"].to(device)
+            targets = batch["target"].to(device)
+            ratings = batch["rating"].to(device)
+
+            pos_mask = ratings >= 0 if zero_positive else ratings > 0
+            if not pos_mask.any():
+                continue
+
+            u_pos = sources[pos_mask]
+            v_pos = targets[pos_mask]
+            v_neg = sample_targets_excluding_lookup(
+                u_pos, num_nodes, heldout_targets_by_source, device
+            )
+
+            optimizer.zero_grad()
+            u_embeds = aligner(u_pos)
+            v_pos_embeds = aligner(v_pos)
+            v_neg_embeds = aligner(v_neg)
+
+            loss = stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, frozen_anchors)
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            num_batches += 1
+
+        print(
+            f"Stage 2 | Epoch {epoch + 1:3d}/{stage2_epochs} | "
+            f"AUC Loss: {epoch_loss / max(1, num_batches):.4f}"
+        )
+
+    return train_loader, val_loader, test_loader, num_nodes, heldout_targets_by_source, aligner, zero_positive
+
+
+def train_stage3(
+    aligner,
+    train_loader,
+    val_loader,
+    num_nodes,
+    heldout_targets_by_source,
+    zero_positive,
+    stage3_epochs,
+    device,
+):
+    """Jointly fine-tune the aligner and predictor, keeping the best val-acc checkpoint."""
+    predictor = HierarchicalPredictor(embed_dim=384).to(device)
+    optimizer = torch.optim.Adam(list(aligner.parameters()) + list(predictor.parameters()), lr=0.001)
+    criterion = nn.BCEWithLogitsLoss()
+    zero_label_policy = "positive" if zero_positive else "negative"
+    evaluator = SNAPEval(task_type="sign_prediction", zero_label_policy=zero_label_policy)
+
+    best_val_acc = float("-inf")
+    best_val_threshold = 0.0
+    best_epoch = 0
+    best_aligner_state = snapshot_state_dict(aligner)
+    best_predictor_state = snapshot_state_dict(predictor)
+
+    print(f"Running Stage 3 for {stage3_epochs} epochs...")
+    for epoch in range(stage3_epochs):
+        epoch_exist_loss = 0.0
+        epoch_sign_loss = 0.0
+        num_batches = 0
+
+        aligner.train()
+        predictor.train()
+        for batch in train_loader:
+            sources = batch["source"].to(device)
+            targets = batch["target"].to(device)
+            ratings = batch["rating"].to(device)
+
+            optimizer.zero_grad()
+
+            num_edges = len(sources)
+            fake_targets = sample_targets_excluding_lookup(
+                sources, num_nodes, heldout_targets_by_source, device
+            )
+
+            all_u = torch.cat([sources, sources], dim=0)
+            all_v = torch.cat([targets, fake_targets], dim=0)
+            exist_labels = torch.cat(
+                [torch.ones(num_edges, device=device), torch.zeros(num_edges, device=device)],
+                dim=0,
+            )
+
+            u_embeds = aligner(all_u)
+            v_embeds = aligner(all_v)
+            exist_logits, sign_logits = predictor(u_embeds, v_embeds)
+
+            loss_exist = criterion(exist_logits, exist_labels)
+            real_sign_logits = sign_logits[:num_edges]
+            sign_labels = (ratings >= 0).float() if zero_positive else (ratings > 0).float()
+            loss_sign = criterion(real_sign_logits, sign_labels)
+
+            loss = loss_exist + loss_sign
+            loss.backward()
+            optimizer.step()
+
+            epoch_exist_loss += loss_exist.item()
+            epoch_sign_loss += loss_sign.item()
+            num_batches += 1
+
+        _, val_labels, val_preds = evaluate_pipeline(
+            aligner,
+            val_loader,
+            device,
+            evaluator,
+            predictor=predictor,
+            split_name="Validation",
+            return_raw=True,
+            verbose=False,
+        )
+        val_threshold = evaluator.find_best_threshold(val_labels, val_preds, metric="acc")
+        val_metrics = evaluator.eval(
+            {
+                "y_true": val_labels,
+                "y_pred": val_preds,
+            },
+            threshold=val_threshold,
+        )
+
+        if val_metrics["acc"] > best_val_acc:
+            best_val_acc = val_metrics["acc"]
+            best_val_threshold = val_threshold
+            best_epoch = epoch + 1
+            best_aligner_state = snapshot_state_dict(aligner)
+            best_predictor_state = snapshot_state_dict(predictor)
+
+        print(
+            f"Stage 3 | Epoch {epoch + 1:3d}/{stage3_epochs} | "
+            f"Exist Loss: {epoch_exist_loss / max(1, num_batches):.4f} | "
+            f"Sign Loss: {epoch_sign_loss / max(1, num_batches):.4f} | "
+            f"Val Acc: {val_metrics['acc']:.4f} | "
+            f"Best Val Acc: {best_val_acc:.4f}"
+        )
+
+    aligner.load_state_dict(best_aligner_state)
+    predictor.load_state_dict(best_predictor_state)
+    print(
+        f"Restored best Stage 3 checkpoint from epoch {best_epoch} "
+        f"(Val Acc: {best_val_acc:.4f}, Threshold: {best_val_threshold:.4f})"
+    )
+
+    return aligner
+
+
+def get_train_node_ids(train_loader, max_nodes, seed):
+    """Collect unique train nodes and optionally subsample them for cleaner plots."""
+    node_ids = torch.unique(
+        torch.cat([train_loader.dataset.sources, train_loader.dataset.targets], dim=0)
+    )
+
+    if max_nodes is None or len(node_ids) <= max_nodes:
+        return node_ids
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    keep = torch.randperm(len(node_ids), generator=generator)[:max_nodes]
+    return node_ids[keep]
+
+
+def collect_stage_points(anchor_dict, stage2_aligner, stage3_aligner, node_ids, device):
+    """Collect anchor and node embeddings for Stage 1/2/3 plotting."""
+    anchor_names = list(anchor_dict.keys())
+    anchor_points = torch.stack([anchor_dict[name].detach().cpu() for name in anchor_names], dim=0).numpy()
+
+    node_ids = node_ids.to(device)
+    with torch.no_grad():
+        stage2_nodes = stage2_aligner(node_ids).detach().cpu().numpy()
+        stage3_nodes = stage3_aligner(node_ids).detach().cpu().numpy()
+
+    return anchor_names, anchor_points, stage2_nodes, stage3_nodes
+
+
+def fit_stage_umap(anchor_points, node_points, seed):
+    """Fit UMAP for one stage using anchors plus a sampled node cloud."""
+    UMAP = require_umap()
+    combined = np.vstack([anchor_points, node_points])
+
+    reducer = UMAP(
+        n_components=2,
+        n_neighbors=min(30, max(5, len(combined) - 1)),
+        min_dist=0.15,
+        metric="cosine",
+        random_state=seed,
+    )
+    coords = reducer.fit_transform(combined)
+
+    num_anchors = len(anchor_points)
+    anchor_coords = coords[:num_anchors]
+    node_coords = coords[num_anchors:]
+    return anchor_coords, node_coords
+
+
+def fit_anchor_umap(anchor_points, seed):
+    """Fit UMAP on the anchor set alone to define the Stage 1 reference frame."""
+    UMAP = require_umap()
+    reducer = UMAP(
+        n_components=2,
+        n_neighbors=min(5, max(2, len(anchor_points) - 1)),
+        min_dist=0.15,
+        metric="cosine",
+        random_state=seed,
+    )
+    return reducer.fit_transform(anchor_points)
+
+def align_stage_to_reference(reference_anchor_coords, stage_anchor_coords, stage_node_coords):
+    """
+    Align one stage's 2D embedding back to the Stage 1 anchor frame.
+
+    UMAP is fit separately for each stage, so its 2D axes are arbitrary. We use
+    the shared anchor identities to estimate a similarity transform that rotates,
+    rescales, and recenters the stage coordinates onto the Stage 1 layout.
+    """
+    ref_center = reference_anchor_coords.mean(axis=0, keepdims=True)
+    stage_center = stage_anchor_coords.mean(axis=0, keepdims=True)
+
+    ref_centered = reference_anchor_coords - ref_center
+    stage_centered = stage_anchor_coords - stage_center
+
+    ref_scale = np.sqrt((ref_centered ** 2).sum())
+    stage_scale = np.sqrt((stage_centered ** 2).sum())
+
+    if ref_scale < 1e-8 or stage_scale < 1e-8:
+        return stage_anchor_coords, stage_node_coords
+
+    ref_norm = ref_centered / ref_scale
+    stage_norm = stage_centered / stage_scale
+
+    u, _, vt = np.linalg.svd(stage_norm.T @ ref_norm)
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0:
+        vt[-1, :] *= -1
+        rotation = u @ vt
+
+    def transform(coords):
+        centered = coords - stage_center
+        normalized = centered / stage_scale
+        rotated = normalized @ rotation
+        return rotated * ref_scale + ref_center
+
+    return transform(stage_anchor_coords), transform(stage_node_coords)
+
+
+def draw_panel(ax, title, anchor_coords, anchor_names, node_coords=None):
+    """Draw one evolution panel with anchors in red and nodes in blue."""
+    if node_coords is not None and len(node_coords) > 0:
+        ax.scatter(
+            node_coords[:, 0],
+            node_coords[:, 1],
+            c="royalblue",
+            s=12,
+            alpha=0.35,
+            label="Train nodes",
+        )
+
+    ax.scatter(
+        anchor_coords[:, 0],
+        anchor_coords[:, 1],
+        c="crimson",
+        s=90,
+        edgecolors="black",
+        linewidths=0.4,
+        label="Anchors",
+        zorder=3,
+    )
+
+    for idx, name in enumerate(anchor_names):
+        ax.annotate(
+            name,
+            (anchor_coords[idx, 0], anchor_coords[idx, 1]),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=8,
+            color="crimson",
+            fontweight="bold",
+        )
+
+    ax.set_title(title)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
+def plot_umap_evolution(dataset, anchor_names, anchor_coords, stage2_coords, stage3_coords, output_path):
+    """Render Stage 1/2/3 panels after aligning each stage to the Stage 1 anchor frame."""
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    draw_panel(axes[0], "Stage 1: Anchor Geometry", anchor_coords, anchor_names)
+    draw_panel(axes[1], "Stage 2: Contrastive Alignment", anchor_coords, anchor_names, stage2_coords)
+    draw_panel(axes[2], "Stage 3: Supervised Refinement", anchor_coords, anchor_names, stage3_coords)
+
+    # Keep all panels on the same visual scale for easier stage-to-stage comparison.
+    all_coords = np.vstack([anchor_coords, stage2_coords, stage3_coords])
+    x_min, y_min = all_coords.min(axis=0)
+    x_max, y_max = all_coords.max(axis=0)
+    x_pad = 0.05 * max(1e-6, x_max - x_min)
+    y_pad = 0.05 * max(1e-6, y_max - y_min)
+
+    for ax in axes:
+        ax.set_xlim(x_min - x_pad, x_max + x_pad)
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    handles, labels = axes[1].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False)
+
+    fig.suptitle(f"BST Hypersphere Evolution via UMAP ({dataset})", fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Plot BST anchor/node evolution with UMAP")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="otc",
+        choices=["alpha", "otc", "epinions", "slashdot", "wiki-rfa", "wiki-elec"],
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument("--stage1-epochs", type=int, default=500)
+    parser.add_argument("--stage2-epochs", type=int, default=10)
+    parser.add_argument("--stage3-epochs", type=int, default=15)
+    parser.add_argument("--max-nodes", type=int, default=600)
+    parser.add_argument("--output", type=str, default=None)
+    args = parser.parse_args()
+
+    set_seed(args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    frozen_anchors = train_stage1(args.stage1_epochs)
+    train_loader, val_loader, _, num_nodes, heldout_targets_by_source, stage2_aligner, zero_positive = train_stage2(
+        args.dataset,
+        {name: tensor.detach().to(device) for name, tensor in frozen_anchors.items()},
+        args.stage2_epochs,
+        args.batch_size,
+        args.seed,
+        device,
+    )
+    stage2_state = snapshot_state_dict(stage2_aligner)
+    stage3_aligner = train_stage3(
+        stage2_aligner,
+        train_loader,
+        val_loader,
+        num_nodes,
+        heldout_targets_by_source,
+        zero_positive,
+        args.stage3_epochs,
+        device,
+    )
+    stage2_aligner_for_plot = Stage2_NodeAligner(
+        num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384
+    ).to(device)
+    stage2_aligner_for_plot.load_state_dict(stage2_state)
+
+    node_ids = get_train_node_ids(train_loader, args.max_nodes, args.seed)
+    anchor_names, anchor_points, stage2_nodes, stage3_nodes = collect_stage_points(
+        frozen_anchors,
+        stage2_aligner_for_plot,
+        stage3_aligner,
+        node_ids,
+        device,
+    )
+    stage1_coords = fit_anchor_umap(anchor_points, args.seed)
+    stage2_anchor_coords, raw_stage2_coords = fit_stage_umap(anchor_points, stage2_nodes, args.seed + 1)
+    stage3_anchor_coords, raw_stage3_coords = fit_stage_umap(anchor_points, stage3_nodes, args.seed + 2)
+
+    _, stage2_coords = align_stage_to_reference(
+        stage1_coords,
+        stage2_anchor_coords,
+        raw_stage2_coords,
+    )
+    _, stage3_coords = align_stage_to_reference(
+        stage1_coords,
+        stage3_anchor_coords,
+        raw_stage3_coords,
+    )
+
+    output_path = args.output or os.path.join("results", f"umap_evolution_{args.dataset}.png")
+    plot_umap_evolution(
+        args.dataset,
+        anchor_names,
+        stage1_coords,
+        stage2_coords,
+        stage3_coords,
+        output_path,
+    )
+    print(f"Saved UMAP evolution plot to {output_path}")
+
+
+if __name__ == "__main__":
+    main()
