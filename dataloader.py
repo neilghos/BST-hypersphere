@@ -20,6 +20,7 @@ DATASETS = {
     'alpha': 'https://snap.stanford.edu/data/soc-sign-bitcoinalpha.csv.gz',
     'otc': 'https://snap.stanford.edu/data/soc-sign-bitcoinotc.csv.gz',
     'epinions': 'https://snap.stanford.edu/data/soc-sign-epinions.txt.gz',
+    'slashdot': 'https://snap.stanford.edu/data/soc-sign-Slashdot090221.txt.gz',
     'wiki-rfa': 'https://snap.stanford.edu/data/wiki-RfA.txt.gz',
     'wiki-elec': 'https://snap.stanford.edu/data/wikiElec.ElecBs3.txt.gz'
 }
@@ -76,6 +77,16 @@ def _split_by_directed_pair(df, seed):
     """
     Split rows by unique directed pair so duplicate interactions never cross splits.
     Keeps approximate sign balance by stratifying pair buckets when possible.
+
+    Flow:
+    1. Collapse repeated rows of the same directed pair (source, target).
+    2. Mark each pair as:
+       - pos_only: all observed rows are positive
+       - non_pos_only: all observed rows are non-positive
+       - mixed: the same directed pair has both kinds of rows
+    3. Split the unique pairs into 70/10/20 train/val/test buckets.
+    4. Merge those pair-level assignments back onto the original row-level
+       dataframe so every repeated copy of the same directed pair stays together.
     """
     pair_df = (
         df.groupby(['source', 'target'], sort=False)['rating']
@@ -117,7 +128,16 @@ def _split_by_directed_pair(df, seed):
 
 
 def _build_target_lookup_from_tensors(*edge_splits):
-    """Build a directed source -> blocked-target lookup from one or more edge splits."""
+    """
+    Build a directed source -> blocked-target lookup from one or more edge splits.
+
+    Example:
+        val/test edges: (0, 5), (0, 8), (2, 3)
+        output: {0: {5, 8}, 2: {3}}
+
+    Stage 2/3 use this lookup to avoid sampling a held-out real edge as a fake
+    negative during training.
+    """
     targets_by_source = defaultdict(set)
     for sources, targets in edge_splits:
         for src, tgt in zip(sources.tolist(), targets.tolist()):
@@ -129,6 +149,11 @@ def sample_targets_excluding_lookup(sources, num_nodes, blocked_targets_by_sourc
     """
     Sample random targets while excluding exact directed pairs present in the blocked lookup.
     This is intentionally limited to the provided blocked splits (e.g. val/test), not train.
+
+    For each source node in the batch:
+    1. Sample a random target uniformly from the node universe.
+    2. If (source, sampled_target) is a blocked held-out edge, resample just that item.
+    3. Repeat until no sampled directed pair collides with the blocked lookup.
     """
     sampled = torch.randint(0, num_nodes, (len(sources),), device=device)
     if len(sources) == 0 or not blocked_targets_by_source:
@@ -158,14 +183,23 @@ def sample_targets_excluding_lookup(sources, num_nodes, blocked_targets_by_sourc
 class SNAPBitcoinDataset(Dataset):
     def __init__(self, data_type='alpha', split='train', root_dir='./data', transform=None, seed=42):
         """
+        Main preprocessing entrypoint for one dataset split.
+
+        High-level flow:
+        1. Load one canonical raw file into a dataframe.
+        2. Build a stable integer node mapping over the full raw node universe.
+        3. Apply a pair-aware 70/10/20 split by directed (source, target).
+        4. Keep only the requested split rows.
+        5. Convert source/target/rating/time columns into tensors for PyTorch.
+
         Args:
-            data_type (str): 'alpha' or 'otc'
-            split (str): 'train', 'val', 'test', or 'all'
+            data_type (str): dataset key from DATASETS
+            split (str): 'train', 'val', or 'test'
             root_dir (str): Directory to store downloaded data
             transform (callable, optional): Optional transform to be applied
         """
         assert data_type in DATASETS, f"data_type must be one of {list(DATASETS.keys())}"
-        assert split in ['train', 'val', 'test', 'all'], "split must be 'train', 'val', 'test', or 'all'"
+        assert split in ['train', 'val', 'test'], "split must be 'train', 'val', or 'test'"
         
         self.split = split
         self.transform = transform
@@ -182,6 +216,7 @@ class SNAPBitcoinDataset(Dataset):
             urllib.request.urlretrieve(url, filepath)
             print("Download complete.")
             
+        # Load the raw edge list into a dataframe with canonical column names.
         if data_type in ['alpha', 'otc']:
             df = pd.read_csv(filepath, compression='gzip', header=None, 
                              names=['source', 'target', 'rating', 'time'])
@@ -199,35 +234,39 @@ class SNAPBitcoinDataset(Dataset):
         else:
             raise ValueError("Unknown file format")
         
-        # Build one stable node universe per raw file. This keeps the setup
-        # fixed-node/closed-world, but does not by itself mix train/test edges.
+        # Collect every raw node ID that appears anywhere in the file, then map it
+        # to a compact integer index so the embedding table can address nodes as
+        # rows 0..num_nodes-1.
         all_nodes = pd.concat([df['source'], df['target']]).unique()
         self.node_mapping = {old_id: new_id for new_id, old_id in enumerate(all_nodes)}
         self.num_nodes = len(self.node_mapping)
-        
         df['source'] = df['source'].map(self.node_mapping)
         df['target'] = df['target'].map(self.node_mapping)
         
-        if split != 'all':
-            # Each split dataset is instantiated separately, so the same seed must
-            # reproduce identical pair assignments across train/val/test loaders.
-            split_df = _split_by_directed_pair(df, seed)
-            if split == 'train':
-                df = split_df[split_df['split'] == 'train'].drop(columns=['split'])
-            elif split == 'val':
-                df = split_df[split_df['split'] == 'val'].drop(columns=['split'])
-            elif split == 'test':
-                df = split_df[split_df['split'] == 'test'].drop(columns=['split'])
+        # Compute one pair-consistent split assignment and then keep only the
+        # requested slice for this dataset object.
+        split_df = _split_by_directed_pair(df, seed)
+        if split == 'train':
+            df = split_df[split_df['split'] == 'train'].drop(columns=['split'])
+        elif split == 'val':
+            df = split_df[split_df['split'] == 'val'].drop(columns=['split'])
+        elif split == 'test':
+            df = split_df[split_df['split'] == 'test'].drop(columns=['split'])
             
+        # Materialize the final split as tensors so DataLoader can batch them.
         self.sources = torch.tensor(df['source'].values, dtype=torch.long)
         self.targets = torch.tensor(df['target'].values, dtype=torch.long)
         self.ratings = torch.tensor(df['rating'].values, dtype=torch.float32)
         if 'time' in df.columns:
             try:
+                # Some datasets store timestamps as parseable strings; convert them
+                # to Unix seconds so every sample has a uniform integer time field.
                 if df['time'].dtype == object:
                     df['time'] = pd.to_datetime(df['time'], errors='coerce').astype('int64') // 10**9
                 self.times = torch.tensor(df['time'].values, dtype=torch.long)
             except Exception:
+                # Time is not currently used by the model, so fall back to zeros
+                # rather than failing preprocessing over timestamp formatting.
                 self.times = torch.zeros(len(df), dtype=torch.long)
         else:
             self.times = torch.zeros(len(df), dtype=torch.long)
@@ -236,6 +275,8 @@ class SNAPBitcoinDataset(Dataset):
         return len(self.sources)
     
     def __getitem__(self, idx):
+        # Return one row as a uniform dict so PyTorch's DataLoader can batch
+        # source/target/rating/time into tensors automatically.
         sample = {
             'source': self.sources[idx],
             'target': self.targets[idx],
@@ -248,7 +289,11 @@ class SNAPBitcoinDataset(Dataset):
 
 def get_dataloaders(data_type='alpha', batch_size=1024, root_dir='./data', seed=42):
     """
-    Returns train, val, and test DataLoaders plus split-aware sampling metadata.
+    Build the three split datasets/loaders plus the held-out masking metadata.
+
+    We instantiate the dataset class three times with the same seed. That recreates
+    the same pair-aware split assignment each time, so train/val/test stay aligned
+    while still materializing as separate Dataset objects.
     """
     print(f"Initializing {data_type} dataset splits with seed {seed}...")
     train_ds = SNAPBitcoinDataset(data_type=data_type, split='train', root_dir=root_dir, seed=seed)

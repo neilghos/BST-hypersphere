@@ -188,7 +188,7 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
 
 def main():
     parser = argparse.ArgumentParser(description="BST Multi-Seed Benchmark Runner")
-    parser.add_argument('--dataset', type=str, default='otc', choices=['alpha', 'otc', 'epinions', 'wiki-rfa', 'wiki-elec'])
+    parser.add_argument('--dataset', type=str, default='otc', choices=['alpha', 'otc', 'epinions', 'slashdot', 'wiki-rfa', 'wiki-elec'])
     parser.add_argument('--runs', type=int, default=10)
     parser.add_argument('--output_dir', type=str, default='./results')
     args = parser.parse_args()

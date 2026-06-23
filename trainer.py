@@ -24,10 +24,10 @@ def snapshot_state_dict(module):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='otc', choices=['alpha', 'otc', 'epinions', 'wiki-rfa', 'wiki-elec', 'all'])
+    parser.add_argument('--dataset', type=str, default='otc', choices=['alpha', 'otc', 'epinions', 'slashdot', 'wiki-rfa', 'wiki-elec', 'all'])
     args = parser.parse_args()
     
-    datasets_to_run = ['alpha', 'otc', 'wiki-elec', 'wiki-rfa','epinions' ] if args.dataset == 'all' else [args.dataset]
+    datasets_to_run = ['alpha', 'otc', 'slashdot', 'wiki-elec', 'wiki-rfa', 'epinions'] if args.dataset == 'all' else [args.dataset]
 
     set_seed(42)
     
