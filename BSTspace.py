@@ -69,65 +69,52 @@ class Stage1_BST_Optimizer(nn.Module):
 
     def forward(self):
         """
-        Compute the Stage 1 BST geometry loss.
+        Compute the Stage 1 BST geometry loss according to strict Heider's Balance Theory.
 
         Loss components:
-            1. `P1` vs `P2`:
-               Keep the trust and malicious poles separated.
-            2. `A_enemy_1_enemy_2`:
-               Push the "enemy of both" anchor away from both poles.
-            3. `A_friend_1_friend_2`:
-               Pull the "friend of both" anchor toward both poles up to pos_margin.
-            4. `A_friend_1_enemy_2`:
-               Pull toward `P1` up to pos_margin, push away from `P2`.
-            5. `A_enemy_1_friend_2`:
-               Push away from `P1`, pull toward `P2` up to pos_margin.
-
-        Goal of the full objective:
-            Arrange the anchor system so its cosine geometry encodes the intended
-            signed-balance structure before any graph-dependent learning begins.
-            The returned scalar is minimized by gradient descent during Stage 1.
+            1. `P1` vs `P2` (The Poles):
+               Force the Trust and Malicious poles to be completely opposite (target cos = -1.0).
+            2. Valid Balanced States (`--+`):
+               - `A_friend_1_enemy_2`: Pull toward `P1` (cos >= pos_margin) and push from `P2` (cos <= -pos_margin).
+               - `A_enemy_1_friend_2`: Push from `P1` (cos <= -pos_margin) and pull to `P2` (cos >= pos_margin).
+            3. Invalid Unbalanced States (`++-`, `---`):
+               - `A_friend_1_friend_2` & `A_enemy_1_enemy_2`: Penalize these implicit negative states
+                 by pushing them to the orthogonal equator (cos = 0.0) so they don't break the valid P1-P2 axis.
         """
         sphere_anchors = self.get_normalized_anchors()
         
         P1 = sphere_anchors["P1"]  
         P2 = sphere_anchors["P2"]  
         
+        # 1. Poles: Push P1 and P2 to be completely opposite (target cos = -1.0)
         cos_P1_P2 = F.cosine_similarity(P1, P2, dim=0)
-        imbalance_loss_1 = torch.relu(cos_P1_P2 - self.neg_margin) 
+        imbalance_loss_1 = 1.0 + cos_P1_P2
         
-        A_enemy_1_enemy_2 = sphere_anchors["A_enemy_1_enemy_2"]
-        cos_P1_A = F.cosine_similarity(P1, A_enemy_1_enemy_2, dim=0)
-        loss_enemy_P1 = torch.relu(cos_P1_A - self.neg_margin)
+        # 2. Valid States (Balanced Triads)
+        # A_friend_1_enemy_2: Should align with P1 and oppose P2
+        A_F1E2 = sphere_anchors["A_friend_1_enemy_2"]
+        loss_F1E2_P1 = torch.relu(self.pos_margin - F.cosine_similarity(P1, A_F1E2, dim=0))
+        loss_F1E2_P2 = torch.relu(self.pos_margin + F.cosine_similarity(P2, A_F1E2, dim=0))
 
-        cos_P2_A = F.cosine_similarity(P2, A_enemy_1_enemy_2, dim=0)
-        loss_enemy_P2 = torch.relu(cos_P2_A - self.neg_margin)
+        # A_enemy_1_friend_2: Should align with P2 and oppose P1
+        A_E1F2 = sphere_anchors["A_enemy_1_friend_2"]
+        loss_E1F2_P1 = torch.relu(self.pos_margin + F.cosine_similarity(P1, A_E1F2, dim=0))
+        loss_E1F2_P2 = torch.relu(self.pos_margin - F.cosine_similarity(P2, A_E1F2, dim=0))
         
-        A_friend_1_friend_2 = sphere_anchors["A_friend_1_friend_2"]
-        cos_P1_F = F.cosine_similarity(P1, A_friend_1_friend_2, dim=0)
-        loss_friend_P1 = torch.relu(self.pos_margin - cos_P1_F) 
+        # 3. Invalid States (Implicit Negatives, Unbalanced Triads)
+        A_F1F2 = sphere_anchors["A_friend_1_friend_2"]
+        loss_F1F2_P1 = torch.abs(F.cosine_similarity(P1, A_F1F2, dim=0))
+        loss_F1F2_P2 = torch.abs(F.cosine_similarity(P2, A_F1F2, dim=0))
         
-        cos_P2_F = F.cosine_similarity(P2, A_friend_1_friend_2, dim=0)
-        loss_friend_P2 = torch.relu(self.pos_margin - cos_P2_F) 
-
-        A_friend_1_enemy_2 = sphere_anchors["A_friend_1_enemy_2"]
-        cos_P1_F1E2 = F.cosine_similarity(P1, A_friend_1_enemy_2, dim=0)
-        loss_F1E2_P1 = torch.relu(self.pos_margin - cos_P1_F1E2) # Pull to P1
-        
-        cos_P2_F1E2 = F.cosine_similarity(P2, A_friend_1_enemy_2, dim=0)
-        loss_F1E2_P2 = torch.relu(cos_P2_F1E2 - self.neg_margin) # Push from P2
-
-        A_enemy_1_friend_2 = sphere_anchors["A_enemy_1_friend_2"]
-        cos_P1_E1F2 = F.cosine_similarity(P1, A_enemy_1_friend_2, dim=0)
-        loss_E1F2_P1 = torch.relu(cos_P1_E1F2 - self.neg_margin) # Push from P1
-        
-        cos_P2_E1F2 = F.cosine_similarity(P2, A_enemy_1_friend_2, dim=0)
-        loss_E1F2_P2 = torch.relu(self.pos_margin - cos_P2_E1F2) # Pull to P2
+        A_E1E2 = sphere_anchors["A_enemy_1_enemy_2"]
+        loss_E1E2_P1 = torch.abs(F.cosine_similarity(P1, A_E1E2, dim=0))
+        loss_E1E2_P2 = torch.abs(F.cosine_similarity(P2, A_E1E2, dim=0))
 
         total_bst_loss = (imbalance_loss_1 + 
-                          loss_enemy_P1 + loss_enemy_P2 + 
-                          loss_friend_P1 + loss_friend_P2 + 
                           loss_F1E2_P1 + loss_F1E2_P2 + 
-                          loss_E1F2_P1 + loss_E1F2_P2)
+                          loss_E1F2_P1 + loss_E1F2_P2 + 
+                          loss_F1F2_P1 + loss_F1F2_P2 + 
+                          loss_E1E2_P1 + loss_E1E2_P2)
         
         return total_bst_loss
+

@@ -73,6 +73,44 @@ def stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, anchors, marg
     
     return auc_loss + (0.1 * gravity_loss)
 
+def stage2_signed_bst_loss(u_embeds, v_embeds, v_neg_embeds, ratings, anchors, zero_positive=False, margin=0.2):
+    """
+    Stage 2 Signed Node Alignment Loss utilizing both Trust (P1) and Malicious (P2) anchors.
+    """
+    P1 = anchors["P1"].to(u_embeds.device)
+    P2 = anchors["P2"].to(u_embeds.device)
+    
+    pos_mask = (ratings >= 0) if zero_positive else (ratings > 0)
+    neg_mask = (ratings < 0)
+    
+    # 1. Structural Edge Alignment
+    true_scores = F.cosine_similarity(u_embeds, v_embeds, dim=-1)
+    fake_scores = F.cosine_similarity(u_embeds, v_neg_embeds, dim=-1)
+    
+    loss_pos_struct = torch.tensor(0.0, device=u_embeds.device)
+    if pos_mask.any():
+        # BPR loss: Pull u and v together, push u and v_neg apart
+        loss_pos_struct = torch.relu(margin - (true_scores[pos_mask] - fake_scores[pos_mask])).mean()
+        
+    loss_neg_struct = torch.tensor(0.0, device=u_embeds.device)
+    if neg_mask.any():
+        # Push u and v completely opposite (target cos = -1.0)
+        loss_neg_struct = (1.0 + true_scores[neg_mask]).mean()
+        
+    # 2. Semantic Anchor Alignment
+    loss_pos_semantic = torch.tensor(0.0, device=u_embeds.device)
+    if pos_mask.any():
+        # Pull targets of positive edges toward P1 (Trust)
+        loss_pos_semantic = (1.0 - F.cosine_similarity(v_embeds[pos_mask], P1.unsqueeze(0), dim=-1)).mean()
+        
+    loss_neg_semantic = torch.tensor(0.0, device=u_embeds.device)
+    if neg_mask.any():
+        # Pull targets of negative edges toward P2 (Malicious)
+        loss_neg_semantic = (1.0 - F.cosine_similarity(v_embeds[neg_mask], P2.unsqueeze(0), dim=-1)).mean()
+        
+    # Combine losses (semantic given smaller weight to act as a gravity regularizer)
+    return loss_pos_struct + loss_neg_struct + 0.1 * (loss_pos_semantic + loss_neg_semantic)
+
 class HierarchicalPredictor(nn.Module):
     def __init__(self, embed_dim=384):
         super().__init__()

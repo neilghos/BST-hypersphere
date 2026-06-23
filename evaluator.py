@@ -1,27 +1,16 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import roc_auc_score, f1_score, accuracy_score
 
 class SNAPEval:
-    def __init__(self, task_type='sign_prediction', score_space='logit', zero_label_policy='negative'):
+    def __init__(self, zero_label_policy='negative'):
         """
-        task_type: 
-            'sign_prediction': binary classification (positive trust vs negative distrust)
-            'weight_prediction': regression task for exact rating (-10 to +10)
-        score_space:
-            'logit': y_pred contains raw logits or signed margins
-            'probability': y_pred contains probabilities in [0, 1]
         zero_label_policy:
             'negative': treat rating == 0 as the negative class
             'positive': treat rating == 0 as the positive class
-            'drop': exclude rating == 0 rows from evaluation
         """
-        self.task_type = task_type
-        if score_space not in {'logit', 'probability'}:
-            raise ValueError(f"Unknown score_space: {score_space}")
-        self.score_space = score_space
-        if zero_label_policy not in {'negative', 'positive', 'drop'}:
+        if zero_label_policy not in {'negative', 'positive'}:
             raise ValueError(f"Unknown zero_label_policy: {zero_label_policy}")
         self.zero_label_policy = zero_label_policy
 
@@ -38,13 +27,9 @@ class SNAPEval:
             
         binary_true = self._binarize_sign_labels(y_true)
         
-        if self.score_space == 'probability':
-            thresholds = np.linspace(0.01, 0.99, 99)
-            best_t = 0.5
-        else:
-            thresholds = np.linspace(-5.0, 5.0, 101)
-            best_t = 0.0
-            
+        # Logit space thresholding
+        thresholds = np.linspace(-5.0, 5.0, 101)
+        best_t = 0.0
         best_score = -1
         
         for t in thresholds:
@@ -73,45 +58,29 @@ class SNAPEval:
         if isinstance(y_pred, torch.Tensor):
             y_pred = y_pred.detach().cpu().numpy()
             
-        if self.task_type == 'sign_prediction':
-            binary_true = self._binarize_sign_labels(y_true)
+        binary_true = self._binarize_sign_labels(y_true)
+        
+        t = threshold if threshold is not None else 0.0
+        pred_binary = (y_pred >= t).astype(int)
+        probs = 1 / (1 + np.exp(-np.clip(y_pred, -10, 10))) 
+        
+        acc = accuracy_score(binary_true, pred_binary)
+        f1_macro = f1_score(binary_true, pred_binary, average='macro', zero_division=0)
+        f1_pos = f1_score(binary_true, pred_binary, pos_label=1, zero_division=0)
+        f1_neg = f1_score(binary_true, pred_binary, pos_label=0, zero_division=0)
+        
+        try:
+            auc = roc_auc_score(binary_true, probs)
+        except ValueError:
+            auc = float('nan')
             
-            if self.score_space == 'probability':
-                t = threshold if threshold is not None else 0.5
-                pred_binary = (y_pred >= t).astype(int)
-                probs = np.clip(y_pred, 0.0, 1.0)
-            else:
-                t = threshold if threshold is not None else 0.0
-                pred_binary = (y_pred >= t).astype(int)
-                probs = 1 / (1 + np.exp(-np.clip(y_pred, -10, 10))) 
-                
-            acc = accuracy_score(binary_true, pred_binary)
-            f1_macro = f1_score(binary_true, pred_binary, average='macro', zero_division=0)
-            f1_pos = f1_score(binary_true, pred_binary, pos_label=1, zero_division=0)
-            f1_neg = f1_score(binary_true, pred_binary, pos_label=0, zero_division=0)
-            
-            try:
-                auc = roc_auc_score(binary_true, probs)
-            except ValueError:
-                auc = float('nan')
-                
-            return {
-                'acc': acc,
-                'f1_macro': f1_macro,
-                'f1_pos': f1_pos,
-                'f1_neg': f1_neg,
-                'auc': auc
-            }
-            
-        elif self.task_type == 'weight_prediction':
-            rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-            mae = mean_absolute_error(y_true, y_pred)
-            return {
-                'rmse': rmse,
-                'mae': mae
-            }
-        else:
-            raise ValueError(f"Unknown task_type: {self.task_type}")
+        return {
+            'acc': acc,
+            'f1_macro': f1_macro,
+            'f1_pos': f1_pos,
+            'f1_neg': f1_neg,
+            'auc': auc
+        }
 
 def evaluate_pipeline(
     aligner,
@@ -139,15 +108,6 @@ def evaluate_pipeline(
             targets = batch['target'].to(device)
             ratings = batch['rating'].to(device)
             
-            if evaluator.task_type == 'sign_prediction' and evaluator.zero_label_policy == 'drop':
-                valid_mask = ratings != 0
-                sources = sources[valid_mask]
-                targets = targets[valid_mask]
-                ratings = ratings[valid_mask]
-            
-            if len(ratings) == 0:
-                continue
-            
             u_embeds = aligner(sources)
             v_embeds = aligner(targets)
             
@@ -156,7 +116,6 @@ def evaluate_pipeline(
                 logits = sign_logits
             else:
                 cos_sim = F.cosine_similarity(u_embeds, v_embeds, dim=-1)
-                
                 logits = cos_sim - 0.5
             
             all_preds.append(logits)

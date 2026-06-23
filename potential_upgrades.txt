@@ -1,0 +1,52 @@
+=====================================================================
+BST PIPELINE ARCHITECTURAL AUDIT & POTENTIAL UPGRADES
+=====================================================================
+
+--- PART 1: THE ARCHITECTURAL DISCONNECT REPORT ---
+
+While the pipeline achieves State-Of-The-Art (SOTA) results against the 2024 SE-SGformer, there is a massive conceptual disconnect between the theoretical "BST Hypersphere" and the actual computational graph. 
+
+1. Stage 1 (Over-optimized, Under-utilized)
+   - Calculates 7 complex semantic anchors (P1=Trust, P2=Malicious, P3=Neutral, and multiple pseudo-anchors).
+   - Optimizes their geometry meticulously in `BSTspace.py`.
+   
+2. Stage 2 (Missing the Anchors)
+   - Completely ignores almost all of the Stage 1 anchors. 
+   - `benchmark.py` and `trainer.py` call `stage2_pairwise_auc_loss()`. 
+   - Inside `nodealligner.py`, this loss function ONLY extracts `P1` to apply a slight gravity pull. It completely ignores `P2` (Malicious) and all the carefully optimized `A_*` pseudo-anchors.
+
+3. Stage 2 (Missing the Negative Edges)
+   - The training loop explicitly filters out negative edges (`pos_mask = ratings >= 0 if zero_positive else ratings > 0`) before calling the Stage 2 loss. 
+   - Thus, the learned embeddings do not encode any negative link structure during this stage.
+   - Ironically, there is a function called `stage2_pure_positive_loss` which *does* use `P2` and the `neg_mask`, but it is dead code (never called).
+
+4. Stage 3 (A Pure MLP)
+   - Ignores the anchors entirely. 
+   - The `HierarchicalPredictor` MLP just concatenates `u_embeds` and `v_embeds`, computes their dot product, and predicts edge existence and sign.
+
+5. Training Data Noise (Minor)
+   - In `dataloader.py`, `_build_target_lookup_from_tensors` blocks `val` and `test` edges to prevent leaks. However, it does not block `train` edges. 
+   - This means `sample_targets_excluding_lookup` can accidentally sample valid positive training edges as "fake negatives," introducing label noise into the AUC loss.
+
+
+--- PART 2: PATHS FORWARD (TRIM OR FIX) ---
+
+Since the results are already SOTA, you have two distinct directions for your paper. We need to decide which story you want to tell:
+
+OPTION A: "Trim It" (The Simple Baselines Paper)
+------------------------------------------------
+If you want to keep the exact current SOTA results, we must drop the BST Hypersphere narrative because the code doesn't use it.
+- Action: Delete Stage 1, delete the pseudo-anchors, and rename the paper's contribution.
+- Story: "Recent Signed GNNs (like SE-SGformer) are overly complex. We show that a simple positive-edge transductive alignment (BPR) followed by a hierarchical MLP is enough to achieve new SOTA on signed link prediction."
+- Pros: Honest, clean, and a very strong empirical finding. Reviewers love "simple baseline beats complex GNN" papers.
+
+OPTION B: "Fix It" (The Balance Theory Paper)
+---------------------------------------------
+If the goal is to publish the BST Hypersphere theory, we must fix the code so the math actually matches the execution. 
+- Action 1: Rewrite `stage2_pairwise_auc_loss` so that it explicitly pushes nodes away from `P2` and utilizes the pseudo-anchors to shape the embedding space.
+- Action 2: Stop filtering out negative edges in Stage 2. Use them to push malicious/distrusted nodes toward the `P2` pole.
+- Action 3: Pass `train_ds` into the target lookup to clean up negative sampling.
+- Pros: Keeps your original theoretical contribution intact. 
+- Potential Upside: If the broken model is already SOTA, fixing it might push the performance even higher!
+
+Let's review these options and decide whether to trim the dead code or wire the architecture together properly.

@@ -5,7 +5,7 @@ from BSTspace import Stage1_BST_Optimizer
 
 import torch.nn as nn
 from dataloader import get_dataloaders, sample_targets_excluding_lookup
-from nodealligner import Stage2_NodeAligner, stage2_pure_positive_loss, stage2_pairwise_auc_loss, HierarchicalPredictor
+from nodealligner import Stage2_NodeAligner, stage2_pure_positive_loss, stage2_pairwise_auc_loss, stage2_signed_bst_loss, HierarchicalPredictor
 from evaluator import SNAPEval, evaluate_pipeline
 
 import numpy as np
@@ -110,24 +110,20 @@ if __name__ == "__main__":
                 targets = batch['target'].to(device)
                 ratings = batch['rating'].to(device)
 
-                pos_mask = ratings >= 0 if zero_positive else ratings > 0
-                if not pos_mask.any():
-                    continue
-
-                u_pos = sources[pos_mask]
-                v_pos = targets[pos_mask]
-
+                # Do NOT filter out negative edges! Use the full graph.
                 v_neg = sample_targets_excluding_lookup(
-                    u_pos, num_nodes, heldout_targets_by_source, device
+                    sources, num_nodes, heldout_targets_by_source, device
                 )
 
                 optimizer_s2.zero_grad()
 
-                u_embeds = aligner(u_pos)
-                v_pos_embeds = aligner(v_pos)
+                u_embeds = aligner(sources)
+                v_embeds = aligner(targets)
                 v_neg_embeds = aligner(v_neg)
 
-                loss_s2 = stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, frozen_anchors)
+                loss_s2 = stage2_signed_bst_loss(
+                    u_embeds, v_embeds, v_neg_embeds, ratings, frozen_anchors, zero_positive=zero_positive
+                )
 
                 loss_s2.backward()
                 optimizer_s2.step()
@@ -145,7 +141,7 @@ if __name__ == "__main__":
 
         criterion = nn.BCEWithLogitsLoss()
         zero_label_policy = 'positive' if zero_positive else 'negative'
-        evaluator = SNAPEval(task_type='sign_prediction', zero_label_policy=zero_label_policy)
+        evaluator = SNAPEval(zero_label_policy=zero_label_policy)
 
         epochs_s3 = 10
         best_val_acc = float('-inf')
