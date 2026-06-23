@@ -62,6 +62,58 @@ def parse_wiki_elec(filepath):
 
 from sklearn.model_selection import train_test_split
 
+
+def _maybe_stratify(labels):
+    """Return labels only when every class has enough members for stratified split."""
+    value_counts = labels.value_counts()
+    if len(value_counts) > 1 and value_counts.min() >= 2:
+        return labels
+    return None
+
+
+def _split_by_directed_pair(df, seed):
+    """
+    Split rows by unique directed pair so duplicate interactions never cross splits.
+    Keeps approximate sign balance by stratifying pair buckets when possible.
+    """
+    pair_df = (
+        df.groupby(['source', 'target'], sort=False)['rating']
+        .agg(
+            has_pos=lambda s: (s > 0).any(),
+            has_non_pos=lambda s: (s <= 0).any(),
+        )
+        .reset_index()
+    )
+
+    pair_df['stratify_label'] = 'mixed'
+    pair_df.loc[pair_df['has_pos'] & ~pair_df['has_non_pos'], 'stratify_label'] = 'pos_only'
+    pair_df.loc[~pair_df['has_pos'] & pair_df['has_non_pos'], 'stratify_label'] = 'non_pos_only'
+
+    train_val_pairs, test_pairs = train_test_split(
+        pair_df[['source', 'target', 'stratify_label']],
+        test_size=0.2,
+        random_state=seed,
+        stratify=_maybe_stratify(pair_df['stratify_label']),
+    )
+
+    train_pairs, val_pairs = train_test_split(
+        train_val_pairs,
+        test_size=0.125,
+        random_state=seed,
+        stratify=_maybe_stratify(train_val_pairs['stratify_label']),
+    )
+
+    split_assignments = pd.concat(
+        [
+            train_pairs[['source', 'target']].assign(split='train'),
+            val_pairs[['source', 'target']].assign(split='val'),
+            test_pairs[['source', 'target']].assign(split='test'),
+        ],
+        ignore_index=True,
+    )
+
+    return df.merge(split_assignments, on=['source', 'target'], how='left')
+
 class SNAPBitcoinDataset(Dataset):
     def __init__(self, data_type='alpha', split='train', root_dir='./data', transform=None, seed=42):
         """
@@ -114,18 +166,13 @@ class SNAPBitcoinDataset(Dataset):
         df['target'] = df['target'].map(self.node_mapping)
         
         if split != 'all':
-            stratify_labels = (df['rating'] > 0).astype(int)
-            train_val_df, test_df = train_test_split(df, test_size=0.2, random_state=seed, stratify=stratify_labels)
-            
-            temp_stratify = (train_val_df['rating'] > 0).astype(int)
-            train_df, val_df = train_test_split(train_val_df, test_size=0.125, random_state=seed, stratify=temp_stratify)
-            
+            split_df = _split_by_directed_pair(df, seed)
             if split == 'train':
-                df = train_df
+                df = split_df[split_df['split'] == 'train'].drop(columns=['split'])
             elif split == 'val':
-                df = val_df
+                df = split_df[split_df['split'] == 'val'].drop(columns=['split'])
             elif split == 'test':
-                df = test_df
+                df = split_df[split_df['split'] == 'test'].drop(columns=['split'])
             
         self.sources = torch.tensor(df['source'].values, dtype=torch.long)
         self.targets = torch.tensor(df['target'].values, dtype=torch.long)
@@ -179,4 +226,4 @@ if __name__ == "__main__":
     print(f"Test edges:  {len(test_loader.dataset)} ({len(test_loader)} batches)")
     
     print("\n--- Split Verification ---")
-    print("Verification Passed: Using stratified random split (70/10/20).")
+    print("Verification Passed: Using pair-aware stratified split (70/10/20) by directed edge.")
