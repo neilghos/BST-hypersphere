@@ -57,7 +57,6 @@ class SNAPEval:
             y_pred = y_pred.detach().cpu().numpy()
             
         if self.task_type == 'sign_prediction':
-            # Map raw SNAP ratings (-10 to +10) to binary labels: >0 is 1 (trust), <=0 is 0 (distrust)
             binary_true = (y_true > 0).astype(int)
             
             is_prob = (y_pred >= 0).all() and (y_pred <= 1).all()
@@ -113,7 +112,6 @@ def evaluate_pipeline(aligner, dataloader, device, evaluator, predictor=None, sp
             targets = batch['target'].to(device)
             ratings = batch['rating'].to(device)
             
-            # Filter out any 0 ratings if they exist
             valid_mask = ratings != 0
             sources = sources[valid_mask]
             targets = targets[valid_mask]
@@ -122,30 +120,23 @@ def evaluate_pipeline(aligner, dataloader, device, evaluator, predictor=None, sp
             if len(ratings) == 0:
                 continue
             
-            # 1. Project nodes
             u_embeds = aligner(sources)
             v_embeds = aligner(targets)
             
             if predictor is not None:
-                # Use the Learned Sign Head
                 _, sign_logits = predictor(u_embeds, v_embeds)
                 logits = sign_logits
             else:
-                # 2. Measure raw geometric distance
                 cos_sim = F.cosine_similarity(u_embeds, v_embeds, dim=-1)
                 
-                # 3. The Geometric Shift
-                # Shift the 0.5 equator to 0.0 so it acts as a standard Logit for SNAPEval
                 logits = cos_sim - 0.5
             
             all_preds.append(logits)
             all_labels.append(ratings) # Pass raw ratings, SNAPEval handles the >0 mapping
             
-    # Compile
     all_preds_tensor = torch.cat(all_preds)
     all_labels_tensor = torch.cat(all_labels)
     
-    # Run through your evaluator
     input_dict = {
         'y_true': all_labels_tensor,
         'y_pred': all_preds_tensor

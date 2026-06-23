@@ -31,14 +31,12 @@ def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
-    # Note: dataloader shuffle uses torch's RNG, so this covers it
 
 
 def run_single_experiment(dataset, seed, device, frozen_anchors):
     """Run one full Stage 2 + Stage 3 experiment and return test metrics."""
     set_seed(seed)
     
-    # --- Stage 2: Pairwise AUC ---
     train_loader, _, test_loader, num_nodes = get_dataloaders(dataset, batch_size=1024, seed=seed)
     
     aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)
@@ -77,7 +75,6 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
         pbar_s2.set_postfix({'AUC Loss': f"{epoch_loss/max(1, num_batches):.4f}"})
     pbar_s2.close()
     
-    # --- Stage 3: Blame Game ---
     predictor = HierarchicalPredictor(embed_dim=384).to(device)
     optimizer_s3 = torch.optim.Adam(list(aligner.parameters()) + list(predictor.parameters()), lr=0.001)
     criterion = nn.BCEWithLogitsLoss()
@@ -127,10 +124,8 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
         })
     pbar_s3.close()
     
-    # --- Evaluate ---
     evaluator = SNAPEval(task_type='sign_prediction')
     
-    # 1. Tune threshold on validation set
     _, val_labels, val_preds = evaluate_pipeline(
         aligner, val_loader, device, evaluator, predictor=predictor, 
         split_name="Validation (Untuned)", return_raw=True
@@ -138,7 +133,6 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
     best_t = evaluator.find_best_threshold(val_labels, val_preds, metric='acc')
     print(f"Tuned Threshold for Accuracy: {best_t:.4f}")
     
-    # 2. Evaluate on test set with tuned threshold
     test_metrics = evaluate_pipeline(
         aligner, test_loader, device, evaluator, predictor=predictor, 
         split_name="Test", threshold=best_t
@@ -157,7 +151,6 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     csv_path = os.path.join(args.output_dir, f"benchmark_{args.dataset}_{args.runs}runs.csv")
     
-    # --- Stage 1: Physics (run once, deterministic from text anchors) ---
     print("=" * 60)
     print(f"  BST BENCHMARK: {args.dataset.upper()} | {args.runs} RUNS")
     print("=" * 60)
@@ -178,11 +171,9 @@ def main():
     final_anchors = bst_model.get_normalized_anchors()
     frozen_anchors = {name: tensor.detach().to(device) for name, tensor in final_anchors.items()}
     
-    # --- Multi-seed runs ---
     seeds = list(range(42, 42 + args.runs))
     all_results = []
     
-    # Write CSV header
     fieldnames = ['run', 'seed', 'acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']
     with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -208,14 +199,12 @@ def main():
         }
         all_results.append(row)
         
-        # Append to CSV after each run (so results are saved even if interrupted)
         with open(csv_path, 'a', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writerow(row)
         
         print(f"  Run {run_idx + 1} done in {elapsed:.1f}s | AUC: {metrics['auc']:.4f} | F1_NEG: {metrics['f1_neg']:.4f}")
     
-    # --- Summary statistics ---
     print("\n" + "=" * 60)
     print("  FINAL RESULTS (mean ± std)")
     print("=" * 60)
@@ -226,7 +215,6 @@ def main():
         std_val = np.std(values)
         print(f"  {metric_name.upper():10s}: {mean_val:.4f} ± {std_val:.4f}")
     
-    # Write summary row
     with open(csv_path, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         summary_mean = {'run': 'MEAN', 'seed': '-'}

@@ -37,7 +37,6 @@ def initialize_hypersphere_anchors():
     raw_vectors = []
     keys = []
 
-    # 3. Extract, Freeze, and Normalize
     with torch.no_grad():
             for anchor_id, prompt in anchor_prompts.items():
                 raw_vectors.append(text_tower.encode(prompt, convert_to_tensor=True))
@@ -62,11 +61,9 @@ if __name__ == "__main__":
     
     print("\nInitial Hypersphere Cosine Similarities (Before Stage 1 BST Optimization):")
     
-    # Check how well MiniLM separated P1 (Trust) and P2 (Malicious) naturally
     sim_P1_P2 = F.cosine_similarity(anchors["P1"], anchors["P2"], dim=0)
     sim_P1_P3 = F.cosine_similarity(anchors["P1"], anchors["P3"], dim=0)
     
     print(f"P1 (Trust) vs P2 (Malicious): {sim_P1_P2.item():.4f}")
     print(f"P1 (Trust) vs P3 (Neutral):   {sim_P1_P3.item():.4f}")
     
-    # Note: These values will be strictly between -1 and 1 because of the L2 norm.

@@ -89,13 +89,10 @@ class SNAPBitcoinDataset(Dataset):
             urllib.request.urlretrieve(url, filepath)
             print("Download complete.")
             
-        # Parse the dataset
         if data_type in ['alpha', 'otc']:
-            # Format: SOURCE, TARGET, RATING, TIME
             df = pd.read_csv(filepath, compression='gzip', header=None, 
                              names=['source', 'target', 'rating', 'time'])
         elif data_type in ['epinions', 'slashdot']:
-            # Format: FromNodeId, ToNodeId, Sign (Tab separated, comments start with #)
             df = pd.read_csv(filepath, compression='gzip', sep='\t', comment='#', header=None,
                              names=['source', 'target', 'rating'])
         elif data_type == 'wiki-rfa':
@@ -109,8 +106,6 @@ class SNAPBitcoinDataset(Dataset):
         else:
             raise ValueError("Unknown file format")
         
-        # Make node IDs contiguous and zero-indexed globally (important for embeddings)
-        # We calculate the mapping over the entire dataset first to ensure consistency across splits.
         all_nodes = pd.concat([df['source'], df['target']]).unique()
         self.node_mapping = {old_id: new_id for new_id, old_id in enumerate(all_nodes)}
         self.num_nodes = len(self.node_mapping)
@@ -118,13 +113,10 @@ class SNAPBitcoinDataset(Dataset):
         df['source'] = df['source'].map(self.node_mapping)
         df['target'] = df['target'].map(self.node_mapping)
         
-        # Stratified Random Split: 80% / 20% first to match baseline test set precisely
-        # Then split the 80% train set to create an inner validation set
         if split != 'all':
             stratify_labels = (df['rating'] > 0).astype(int)
             train_val_df, test_df = train_test_split(df, test_size=0.2, random_state=seed, stratify=stratify_labels)
             
-            # Create inner validation set from train_val_df (e.g. 10% of total data = 12.5% of train_val_df)
             temp_stratify = (train_val_df['rating'] > 0).astype(int)
             train_df, val_df = train_test_split(train_val_df, test_size=0.125, random_state=seed, stratify=temp_stratify)
             
@@ -140,7 +132,6 @@ class SNAPBitcoinDataset(Dataset):
         self.ratings = torch.tensor(df['rating'].values, dtype=torch.float32)
         if 'time' in df.columns:
             try:
-                # Some datasets like Wiki-RfA have string timestamps
                 if df['time'].dtype == object:
                     df['time'] = pd.to_datetime(df['time'], errors='coerce').astype('int64') // 10**9
                 self.times = torch.tensor(df['time'].values, dtype=torch.long)
@@ -172,7 +163,6 @@ def get_dataloaders(data_type='alpha', batch_size=1024, root_dir='./data', seed=
     val_ds = SNAPBitcoinDataset(data_type=data_type, split='val', root_dir=root_dir, seed=seed)
     test_ds = SNAPBitcoinDataset(data_type=data_type, split='test', root_dir=root_dir, seed=seed)
     
-    # Shuffle only the training set
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
