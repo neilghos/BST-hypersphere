@@ -118,15 +118,15 @@ class SNAPBitcoinDataset(Dataset):
         df['source'] = df['source'].map(self.node_mapping)
         df['target'] = df['target'].map(self.node_mapping)
         
-        # Stratified Random Split: 70% train, 10% val, 20% test
-        # We stratify by the sign of the rating (positive vs negative) to ensure consistent class balance
+        # Stratified Random Split: 80% / 20% first to match baseline test set precisely
+        # Then split the 80% train set to create an inner validation set
         if split != 'all':
             stratify_labels = (df['rating'] > 0).astype(int)
-            train_df, temp_df = train_test_split(df, test_size=0.3, random_state=seed, stratify=stratify_labels)
+            train_val_df, test_df = train_test_split(df, test_size=0.2, random_state=seed, stratify=stratify_labels)
             
-            temp_stratify = (temp_df['rating'] > 0).astype(int)
-            # 2/3 of 30% is 20%. So val gets 10%, test gets 20%.
-            val_df, test_df = train_test_split(temp_df, test_size=2/3, random_state=seed, stratify=temp_stratify)
+            # Create inner validation set from train_val_df (e.g. 10% of total data = 12.5% of train_val_df)
+            temp_stratify = (train_val_df['rating'] > 0).astype(int)
+            train_df, val_df = train_test_split(train_val_df, test_size=0.125, random_state=seed, stratify=temp_stratify)
             
             if split == 'train':
                 df = train_df
