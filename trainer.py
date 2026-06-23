@@ -60,7 +60,7 @@ if __name__ == "__main__":
     print("=============================================")
 
     # 1. Load the SNAP Dataset (This handles the download, mapping, and temporal split)
-    train_loader, val_loader, test_loader, num_nodes = get_dataloaders('alpha', batch_size=1024)
+    train_loader, val_loader, test_loader, num_nodes = get_dataloaders('wiki-elec', batch_size=1024)
 
     # 2. Initialize the Stage 2 Projector Network
     aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)
@@ -180,12 +180,20 @@ if __name__ == "__main__":
     print("\nPipeline Complete: Predictor fully trained.")
 
     # ==========================================
-    # STAGE 4: EVALUATION
+    # EVALUATION
     # ==========================================
     evaluator = SNAPEval(task_type='sign_prediction')
     
-    # Evaluate on Validation Set
-    evaluate_pipeline(aligner, val_loader, device, evaluator, predictor=predictor, split_name="Validation")
+    # 1. Tune threshold on validation set
+    _, val_labels, val_preds = evaluate_pipeline(
+        aligner, val_loader, device, evaluator, predictor=predictor, 
+        split_name="Validation (Untuned)", return_raw=True
+    )
+    best_t = evaluator.find_best_threshold(val_labels, val_preds, metric='acc')
+    print(f"Tuned Threshold for Accuracy: {best_t:.4f}")
     
-    # Evaluate on Test Set
-    evaluate_pipeline(aligner, test_loader, device, evaluator, predictor=predictor, split_name="Test")
+    # 2. Evaluate on test set with tuned threshold
+    evaluate_pipeline(
+        aligner, test_loader, device, evaluator, predictor=predictor, 
+        split_name="Test", threshold=best_t
+    )

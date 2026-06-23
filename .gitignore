@@ -27,3 +27,4 @@ ENV/
 .idea/
 *.swp
 *.swo
+/SE-SGformer-ref

@@ -12,7 +12,42 @@ class SNAPEval:
         """
         self.task_type = task_type
         
-    def eval(self, input_dict):
+    def find_best_threshold(self, y_true, y_pred, metric='acc'):
+        if isinstance(y_true, torch.Tensor):
+            y_true = y_true.detach().cpu().numpy()
+        if isinstance(y_pred, torch.Tensor):
+            y_pred = y_pred.detach().cpu().numpy()
+            
+        binary_true = (y_true > 0).astype(int)
+        
+        is_prob = (y_pred >= 0).all() and (y_pred <= 1).all()
+        if is_prob:
+            thresholds = np.linspace(0.01, 0.99, 99)
+            best_t = 0.5
+        else:
+            thresholds = np.linspace(-5.0, 5.0, 101)
+            best_t = 0.0
+            
+        best_score = -1
+        
+        for t in thresholds:
+            pred_binary = (y_pred >= t).astype(int)
+            if metric == 'acc':
+                score = accuracy_score(binary_true, pred_binary)
+            elif metric == 'f1_macro':
+                score = f1_score(binary_true, pred_binary, average='macro', zero_division=0)
+            elif metric == 'f1_pos':
+                score = f1_score(binary_true, pred_binary, pos_label=1, zero_division=0)
+            elif metric == 'f1_neg':
+                score = f1_score(binary_true, pred_binary, pos_label=0, zero_division=0)
+                
+            if score > best_score:
+                best_score = score
+                best_t = t
+                
+        return best_t
+        
+    def eval(self, input_dict, threshold=None):
         y_true = input_dict['y_true']
         y_pred = input_dict['y_pred']
         
@@ -25,11 +60,14 @@ class SNAPEval:
             # Map raw SNAP ratings (-10 to +10) to binary labels: >0 is 1 (trust), <=0 is 0 (distrust)
             binary_true = (y_true > 0).astype(int)
             
-            if (y_pred >= 0).all() and (y_pred <= 1).all():
-                pred_binary = (y_pred >= 0.5).astype(int)
+            is_prob = (y_pred >= 0).all() and (y_pred <= 1).all()
+            if is_prob:
+                t = threshold if threshold is not None else 0.5
+                pred_binary = (y_pred >= t).astype(int)
                 probs = y_pred
             else:
-                pred_binary = (y_pred >= 0.0).astype(int)
+                t = threshold if threshold is not None else 0.0
+                pred_binary = (y_pred >= t).astype(int)
                 probs = 1 / (1 + np.exp(-np.clip(y_pred, -10, 10))) 
                 
             acc = accuracy_score(binary_true, pred_binary)
@@ -60,7 +98,7 @@ class SNAPEval:
         else:
             raise ValueError(f"Unknown task_type: {self.task_type}")
 
-def evaluate_pipeline(aligner, dataloader, device, evaluator, predictor=None, split_name="Test"):
+def evaluate_pipeline(aligner, dataloader, device, evaluator, predictor=None, split_name="Test", threshold=None, return_raw=False):
     aligner.eval()
     if predictor is not None:
         predictor.eval()
@@ -113,10 +151,12 @@ def evaluate_pipeline(aligner, dataloader, device, evaluator, predictor=None, sp
         'y_pred': all_preds_tensor
     }
     
-    metrics = evaluator.eval(input_dict)
+    metrics = evaluator.eval(input_dict, threshold=threshold)
     
-    print(f"Results for {split_name}:")
+    print(f"Results for {split_name}" + (f" (Threshold: {threshold:.4f}):" if threshold is not None else ":"))
     for k, v in metrics.items():
         print(f"  {k.upper()}: {v:.4f}")
         
+    if return_raw:
+        return metrics, all_labels_tensor, all_preds_tensor
     return metrics

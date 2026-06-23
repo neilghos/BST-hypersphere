@@ -1,0 +1,245 @@
+"""
+Multi-seed benchmark runner for BST pipeline.
+Runs the full pipeline N times with different random seeds and logs results to CSV.
+
+Usage:
+    python benchmark.py --dataset otc --runs 10
+    python benchmark.py --dataset alpha --runs 10
+    python benchmark.py --dataset epinions --runs 5
+    python benchmark.py --dataset slashdot --runs 5
+"""
+
+import argparse
+import csv
+import os
+import time
+import numpy as np
+from tqdm import tqdm
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from anchor import initialize_hypersphere_anchors
+from BSTspace import Stage1_BST_Optimizer
+from dataloader import get_dataloaders
+from nodealligner import Stage2_NodeAligner, stage2_pairwise_auc_loss, HierarchicalPredictor
+from evaluator import SNAPEval, evaluate_pipeline
+
+
+def set_seed(seed):
+    """Set all random seeds for reproducibility."""
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    # Note: dataloader shuffle uses torch's RNG, so this covers it
+
+
+def run_single_experiment(dataset, seed, device, frozen_anchors):
+    """Run one full Stage 2 + Stage 3 experiment and return test metrics."""
+    set_seed(seed)
+    
+    # --- Stage 2: Pairwise AUC ---
+    train_loader, _, test_loader, num_nodes = get_dataloaders(dataset, batch_size=1024, seed=seed)
+    
+    aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)
+    optimizer_s2 = torch.optim.Adam(aligner.parameters(), lr=0.005)
+    
+    aligner.train()
+    epochs_s2 = 100
+    pbar_s2 = tqdm(range(epochs_s2), desc=f"Stage 2 (Seed {seed})", leave=False, dynamic_ncols=True)
+    for epoch in pbar_s2:
+        epoch_loss = 0.0
+        num_batches = 0
+        for batch in train_loader:
+            sources = batch['source'].to(device)
+            targets = batch['target'].to(device)
+            ratings = batch['rating'].to(device)
+            
+            pos_mask = ratings > 0
+            if not pos_mask.any():
+                continue
+            
+            u_pos = sources[pos_mask]
+            v_pos = targets[pos_mask]
+            v_neg = torch.randint(0, num_nodes, (len(u_pos),), device=device)
+            
+            optimizer_s2.zero_grad()
+            u_embeds = aligner(u_pos)
+            v_pos_embeds = aligner(v_pos)
+            v_neg_embeds = aligner(v_neg)
+            loss_s2 = stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, frozen_anchors)
+            loss_s2.backward()
+            optimizer_s2.step()
+            
+            epoch_loss += loss_s2.item()
+            num_batches += 1
+            
+        pbar_s2.set_postfix({'AUC Loss': f"{epoch_loss/max(1, num_batches):.4f}"})
+    pbar_s2.close()
+    
+    # --- Stage 3: Blame Game ---
+    predictor = HierarchicalPredictor(embed_dim=384).to(device)
+    optimizer_s3 = torch.optim.Adam(list(aligner.parameters()) + list(predictor.parameters()), lr=0.001)
+    criterion = nn.BCEWithLogitsLoss()
+    
+    predictor.train()
+    aligner.train()
+    epochs_s3 = 50
+    pbar_s3 = tqdm(range(epochs_s3), desc=f"Stage 3 (Seed {seed})", leave=False, dynamic_ncols=True)
+    for epoch in pbar_s3:
+        epoch_exist_loss = 0.0
+        epoch_sign_loss = 0.0
+        num_batches = 0
+        for batch in train_loader:
+            sources = batch['source'].to(device)
+            targets = batch['target'].to(device)
+            ratings = batch['rating'].to(device)
+            
+            optimizer_s3.zero_grad()
+            
+            num_edges = len(sources)
+            fake_targets = torch.randint(0, num_nodes, (num_edges,), device=device)
+            
+            all_u = torch.cat([sources, sources], dim=0)
+            all_v = torch.cat([targets, fake_targets], dim=0)
+            exist_labels = torch.cat([torch.ones(num_edges, device=device), torch.zeros(num_edges, device=device)], dim=0)
+            
+            u_embeds = aligner(all_u)
+            v_embeds = aligner(all_v)
+            exist_logits, sign_logits = predictor(u_embeds, v_embeds)
+            
+            loss_exist = criterion(exist_logits, exist_labels)
+            real_sign_logits = sign_logits[:num_edges]
+            sign_labels = (ratings > 0).float()
+            loss_sign = criterion(real_sign_logits, sign_labels)
+            
+            loss_s3 = loss_exist + loss_sign
+            loss_s3.backward()
+            optimizer_s3.step()
+            
+            epoch_exist_loss += loss_exist.item()
+            epoch_sign_loss += loss_sign.item()
+            num_batches += 1
+            
+        pbar_s3.set_postfix({
+            'Exist': f"{epoch_exist_loss/max(1, num_batches):.4f}", 
+            'Sign': f"{epoch_sign_loss/max(1, num_batches):.4f}"
+        })
+    pbar_s3.close()
+    
+    # --- Evaluate ---
+    evaluator = SNAPEval(task_type='sign_prediction')
+    
+    # 1. Tune threshold on validation set
+    _, val_labels, val_preds = evaluate_pipeline(
+        aligner, val_loader, device, evaluator, predictor=predictor, 
+        split_name="Validation (Untuned)", return_raw=True
+    )
+    best_t = evaluator.find_best_threshold(val_labels, val_preds, metric='acc')
+    print(f"Tuned Threshold for Accuracy: {best_t:.4f}")
+    
+    # 2. Evaluate on test set with tuned threshold
+    test_metrics = evaluate_pipeline(
+        aligner, test_loader, device, evaluator, predictor=predictor, 
+        split_name="Test", threshold=best_t
+    )
+    
+    return test_metrics
+
+
+def main():
+    parser = argparse.ArgumentParser(description="BST Multi-Seed Benchmark Runner")
+    parser.add_argument('--dataset', type=str, default='otc', choices=['alpha', 'otc', 'epinions', 'wiki-rfa', 'wiki-elec'])
+    parser.add_argument('--runs', type=int, default=10)
+    parser.add_argument('--output_dir', type=str, default='./results')
+    args = parser.parse_args()
+    
+    os.makedirs(args.output_dir, exist_ok=True)
+    csv_path = os.path.join(args.output_dir, f"benchmark_{args.dataset}_{args.runs}runs.csv")
+    
+    # --- Stage 1: Physics (run once, deterministic from text anchors) ---
+    print("=" * 60)
+    print(f"  BST BENCHMARK: {args.dataset.upper()} | {args.runs} RUNS")
+    print("=" * 60)
+    
+    anchor_embeddings = initialize_hypersphere_anchors()
+    bst_model = Stage1_BST_Optimizer(anchor_embeddings, neg_margin=0.0)
+    optimizer = torch.optim.Adam(bst_model.parameters(), lr=0.01)
+    
+    print("\n--- Stage 1: BST Physics (shared across all runs) ---")
+    for epoch in range(500):
+        optimizer.zero_grad()
+        loss = bst_model()
+        loss.backward()
+        optimizer.step()
+    print(f"Stage 1 complete. Final loss: {loss.item():.4f}")
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    final_anchors = bst_model.get_normalized_anchors()
+    frozen_anchors = {name: tensor.detach().to(device) for name, tensor in final_anchors.items()}
+    
+    # --- Multi-seed runs ---
+    seeds = list(range(42, 42 + args.runs))
+    all_results = []
+    
+    # Write CSV header
+    fieldnames = ['run', 'seed', 'acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+    
+    for run_idx, seed in enumerate(seeds):
+        print(f"\n{'='*60}")
+        print(f"  RUN {run_idx + 1}/{args.runs} | Seed: {seed}")
+        print(f"{'='*60}")
+        
+        start_time = time.time()
+        metrics = run_single_experiment(args.dataset, seed, device, frozen_anchors)
+        elapsed = time.time() - start_time
+        
+        row = {
+            'run': run_idx + 1,
+            'seed': seed,
+            'acc': metrics['acc'],
+            'f1_macro': metrics['f1_macro'],
+            'f1_pos': metrics['f1_pos'],
+            'f1_neg': metrics['f1_neg'],
+            'auc': metrics['auc']
+        }
+        all_results.append(row)
+        
+        # Append to CSV after each run (so results are saved even if interrupted)
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writerow(row)
+        
+        print(f"  Run {run_idx + 1} done in {elapsed:.1f}s | AUC: {metrics['auc']:.4f} | F1_NEG: {metrics['f1_neg']:.4f}")
+    
+    # --- Summary statistics ---
+    print("\n" + "=" * 60)
+    print("  FINAL RESULTS (mean ± std)")
+    print("=" * 60)
+    
+    for metric_name in ['acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']:
+        values = [r[metric_name] for r in all_results]
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+        print(f"  {metric_name.upper():10s}: {mean_val:.4f} ± {std_val:.4f}")
+    
+    # Write summary row
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        summary_mean = {'run': 'MEAN', 'seed': '-'}
+        summary_std = {'run': 'STD', 'seed': '-'}
+        for metric_name in ['acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']:
+            values = [r[metric_name] for r in all_results]
+            summary_mean[metric_name] = f"{np.mean(values):.4f}"
+            summary_std[metric_name] = f"{np.std(values):.4f}"
+        writer.writerow(summary_mean)
+        writer.writerow(summary_std)
+    
+    print(f"\nResults saved to: {csv_path}")
+
+
+if __name__ == "__main__":
+    main()

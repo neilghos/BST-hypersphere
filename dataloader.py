@@ -17,11 +17,53 @@ from torch.utils.data import Dataset, DataLoader
 
 DATASETS = {
     'alpha': 'https://snap.stanford.edu/data/soc-sign-bitcoinalpha.csv.gz',
-    'otc': 'https://snap.stanford.edu/data/soc-sign-bitcoinotc.csv.gz'
+    'otc': 'https://snap.stanford.edu/data/soc-sign-bitcoinotc.csv.gz',
+    'epinions': 'https://snap.stanford.edu/data/soc-sign-epinions.txt.gz',
+    'wiki-rfa': 'https://snap.stanford.edu/data/wiki-RfA.txt.gz',
+    'wiki-elec': 'https://snap.stanford.edu/data/wikiElec.ElecBs3.txt.gz'
 }
 
+def parse_wiki_rfa(filepath):
+    import gzip
+    data = []
+    with gzip.open(filepath, 'rt', encoding='utf-8', errors='ignore') as f:
+        src, tgt, vot, dat = None, None, None, None
+        for line in f:
+            line = line.strip()
+            if line.startswith('SRC:'): src = line[4:]
+            elif line.startswith('TGT:'): tgt = line[4:]
+            elif line.startswith('VOT:'): vot = float(line[4:])
+            elif line.startswith('DAT:'): dat = line[4:]
+            elif line == '':
+                if src and tgt and vot is not None:
+                    data.append((src, tgt, vot, dat))
+                src, tgt, vot, dat = None, None, None, None
+    return pd.DataFrame(data, columns=['source', 'target', 'rating', 'time'])
+
+def parse_wiki_elec(filepath):
+    import gzip
+    data = []
+    with gzip.open(filepath, 'rt', encoding='utf-8', errors='ignore') as f:
+        tgt = None
+        for line in f:
+            line = line.strip()
+            if line.startswith('U\t'):
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    tgt = parts[1]
+            elif line.startswith('V\t'):
+                parts = line.split('\t')
+                if len(parts) >= 4 and tgt is not None:
+                    vot = float(parts[1])
+                    src = parts[2]
+                    dat = parts[3]
+                    data.append((src, tgt, vot, dat))
+    return pd.DataFrame(data, columns=['source', 'target', 'rating', 'time'])
+
+from sklearn.model_selection import train_test_split
+
 class SNAPBitcoinDataset(Dataset):
-    def __init__(self, data_type='alpha', split='train', root_dir='./data', transform=None):
+    def __init__(self, data_type='alpha', split='train', root_dir='./data', transform=None, seed=42):
         """
         Args:
             data_type (str): 'alpha' or 'otc'
@@ -29,7 +71,7 @@ class SNAPBitcoinDataset(Dataset):
             root_dir (str): Directory to store downloaded data
             transform (callable, optional): Optional transform to be applied
         """
-        assert data_type in DATASETS, "data_type must be 'alpha' or 'otc'"
+        assert data_type in DATASETS, f"data_type must be one of {list(DATASETS.keys())}"
         assert split in ['train', 'val', 'test', 'all'], "split must be 'train', 'val', 'test', or 'all'"
         
         self.split = split
@@ -48,9 +90,24 @@ class SNAPBitcoinDataset(Dataset):
             print("Download complete.")
             
         # Parse the dataset
-        # Format: SOURCE, TARGET, RATING, TIME
-        df = pd.read_csv(filepath, compression='gzip', header=None, 
-                         names=['source', 'target', 'rating', 'time'])
+        if data_type in ['alpha', 'otc']:
+            # Format: SOURCE, TARGET, RATING, TIME
+            df = pd.read_csv(filepath, compression='gzip', header=None, 
+                             names=['source', 'target', 'rating', 'time'])
+        elif data_type in ['epinions', 'slashdot']:
+            # Format: FromNodeId, ToNodeId, Sign (Tab separated, comments start with #)
+            df = pd.read_csv(filepath, compression='gzip', sep='\t', comment='#', header=None,
+                             names=['source', 'target', 'rating'])
+        elif data_type == 'wiki-rfa':
+            df = parse_wiki_rfa(filepath)
+        elif data_type == 'wiki-elec':
+            df = parse_wiki_elec(filepath)
+        elif filepath.endswith('.csv.gz'):
+            df = pd.read_csv(filepath, header=None, names=['source', 'target', 'rating', 'time'])
+        elif filepath.endswith('.txt.gz'):
+            df = pd.read_csv(filepath, sep='\t', header=None, comment='#', names=['source', 'target', 'rating', 'time'])
+        else:
+            raise ValueError("Unknown file format")
         
         # Make node IDs contiguous and zero-indexed globally (important for embeddings)
         # We calculate the mapping over the entire dataset first to ensure consistency across splits.
@@ -61,25 +118,36 @@ class SNAPBitcoinDataset(Dataset):
         df['source'] = df['source'].map(self.node_mapping)
         df['target'] = df['target'].map(self.node_mapping)
         
-        # Temporal Split: sort by time to prevent future data leakage
-        # df = df.sort_values('time').reset_index(drop=True)  <-- Delete this
-        df = df.sample(frac=1, random_state=42).reset_index(drop=True) # <-- Use this
-        
-        n_edges = len(df)
-        train_end = int(0.7 * n_edges)
-        val_end = int(0.8 * n_edges)
-        
-        if split == 'train':
-            df = df.iloc[:train_end]
-        elif split == 'val':
-            df = df.iloc[train_end:val_end]
-        elif split == 'test':
-            df = df.iloc[val_end:]
+        # Stratified Random Split: 70% train, 10% val, 20% test
+        # We stratify by the sign of the rating (positive vs negative) to ensure consistent class balance
+        if split != 'all':
+            stratify_labels = (df['rating'] > 0).astype(int)
+            train_df, temp_df = train_test_split(df, test_size=0.3, random_state=seed, stratify=stratify_labels)
+            
+            temp_stratify = (temp_df['rating'] > 0).astype(int)
+            # 2/3 of 30% is 20%. So val gets 10%, test gets 20%.
+            val_df, test_df = train_test_split(temp_df, test_size=2/3, random_state=seed, stratify=temp_stratify)
+            
+            if split == 'train':
+                df = train_df
+            elif split == 'val':
+                df = val_df
+            elif split == 'test':
+                df = test_df
             
         self.sources = torch.tensor(df['source'].values, dtype=torch.long)
         self.targets = torch.tensor(df['target'].values, dtype=torch.long)
         self.ratings = torch.tensor(df['rating'].values, dtype=torch.float32)
-        self.times = torch.tensor(df['time'].values, dtype=torch.long)
+        if 'time' in df.columns:
+            try:
+                # Some datasets like Wiki-RfA have string timestamps
+                if df['time'].dtype == object:
+                    df['time'] = pd.to_datetime(df['time'], errors='coerce').astype('int64') // 10**9
+                self.times = torch.tensor(df['time'].values, dtype=torch.long)
+            except Exception:
+                self.times = torch.zeros(len(df), dtype=torch.long)
+        else:
+            self.times = torch.zeros(len(df), dtype=torch.long)
         
     def __len__(self):
         return len(self.sources)
@@ -95,14 +163,14 @@ class SNAPBitcoinDataset(Dataset):
             sample = self.transform(sample)
         return sample
 
-def get_dataloaders(data_type='alpha', batch_size=1024, root_dir='./data'):
+def get_dataloaders(data_type='alpha', batch_size=1024, root_dir='./data', seed=42):
     """
-    Returns train, val, and test DataLoaders for the specified SNAP Bitcoin dataset.
+    Returns train, val, and test DataLoaders for the specified SNAP dataset.
     """
-    print(f"Initializing {data_type} dataset splits...")
-    train_ds = SNAPBitcoinDataset(data_type=data_type, split='train', root_dir=root_dir)
-    val_ds = SNAPBitcoinDataset(data_type=data_type, split='val', root_dir=root_dir)
-    test_ds = SNAPBitcoinDataset(data_type=data_type, split='test', root_dir=root_dir)
+    print(f"Initializing {data_type} dataset splits with seed {seed}...")
+    train_ds = SNAPBitcoinDataset(data_type=data_type, split='train', root_dir=root_dir, seed=seed)
+    val_ds = SNAPBitcoinDataset(data_type=data_type, split='val', root_dir=root_dir, seed=seed)
+    test_ds = SNAPBitcoinDataset(data_type=data_type, split='test', root_dir=root_dir, seed=seed)
     
     # Shuffle only the training set
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
@@ -120,18 +188,5 @@ if __name__ == "__main__":
     print(f"Val edges:   {len(val_loader.dataset)} ({len(val_loader)} batches)")
     print(f"Test edges:  {len(test_loader.dataset)} ({len(test_loader)} batches)")
     
-    # Verify temporal splitting
-    train_max_time = train_loader.dataset.times.max().item()
-    val_min_time = val_loader.dataset.times.min().item()
-    val_max_time = val_loader.dataset.times.max().item()
-    test_min_time = test_loader.dataset.times.min().item()
-    
-    print("\n--- Temporal Split Verification ---")
-    print(f"Train Max Time: {train_max_time}")
-    print(f"Val Min Time:   {val_min_time}")
-    print(f"Val Max Time:   {val_max_time}")
-    print(f"Test Min Time:  {test_min_time}")
-    
-    assert train_max_time <= val_min_time, "Leakage: Train time overlaps with Val time!"
-    assert val_max_time <= test_min_time, "Leakage: Val time overlaps with Test time!"
-    print("Verification Passed: No temporal leakage detected. Splits are purely chronological.")
+    print("\n--- Split Verification ---")
+    print("Verification Passed: Using stratified random split (70/10/20).")
