@@ -22,14 +22,14 @@ def initialize_hypersphere_anchors():
     text_tower = SentenceTransformer(model_name)
 
     anchor_prompts = {
-        "P1": "Archetype Primary Party A: A highly trusted, reputable sovereign node with significant positive algebraic credit and strong consensus alliance.",
-        "P2": "Archetype Primary Party B: A malicious, adversarial actor characterized by systemic risk, fraudulent behavior, and high structural distrust.",
-        "P3": "Archetype Primary Party C: A neutral, passive observer node with inert transactional background and no strong polar network alignment.",
+        "P1": "Archetype Trust: A highly trusted, reputable sovereign node with significant positive algebraic credit and strong consensus alliance.",
+        "P2": "Archetype Malicious: A malicious, adversarial actor characterized by systemic risk, fraudulent behavior, and high structural distrust.",
+        "P3": "Archetype Neutral: A neutral, passive observer node with inert transactional background and no strong polar network alignment.",
         
-        "A_enemy_1_enemy_2": "Pseudo-Anchor Constraint: A structural adversary that exhibits explicit hostility, distrust, and negative links to both Party A and Party B.",
-        "A_friend_1_friend_2": "Pseudo-Anchor Constraint: A mutual structural ally that exhibits strong positive consensus and trust with both Party A and Party B.",
-        "A_friend_1_enemy_2": "Pseudo-Anchor Constraint: A polarized node that is deeply allied with Party A but structurally hostile and distrustful to Party B.",
-        "A_enemy_1_friend_2": "Pseudo-Anchor Constraint: A polarized node that is structurally hostile to Party A but deeply allied and trusted by Party B."
+        "A_enemy_1_enemy_2": "Pseudo-Anchor Constraint: A structural adversary that exhibits explicit hostility, distrust, and negative links to both the highly trusted node and the malicious adversarial node.",
+        "A_friend_1_friend_2": "Pseudo-Anchor Constraint: A mutual structural ally that exhibits strong positive consensus and trust with both the highly trusted node and the malicious adversarial node.",
+        "A_friend_1_enemy_2": "Pseudo-Anchor Constraint: A polarized node that is deeply allied with the highly trusted node but structurally hostile and distrustful to the malicious adversarial node.",
+        "A_enemy_1_friend_2": "Pseudo-Anchor Constraint: A polarized node that is structurally hostile to the highly trusted node but deeply allied and trusted by the malicious adversarial node."
     }
 
     print("Encoding anchors and projecting to hypersphere...")

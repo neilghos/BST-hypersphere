@@ -37,7 +37,7 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
     """Run one full Stage 2 + Stage 3 experiment and return test metrics."""
     set_seed(seed)
     
-    train_loader, _, test_loader, num_nodes = get_dataloaders(dataset, batch_size=1024, seed=seed)
+    train_loader, val_loader, test_loader, num_nodes = get_dataloaders(dataset, batch_size=1024, seed=seed)
     
     aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)
     optimizer_s2 = torch.optim.Adam(aligner.parameters(), lr=0.005)
