@@ -11,6 +11,7 @@ ssl._create_default_https_context = create_default_context_patched
 
 import urllib.request
 import gzip
+from collections import defaultdict
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -114,6 +115,46 @@ def _split_by_directed_pair(df, seed):
 
     return df.merge(split_assignments, on=['source', 'target'], how='left')
 
+
+def _build_target_lookup_from_tensors(*edge_splits):
+    """Build a directed source -> blocked-target lookup from one or more edge splits."""
+    targets_by_source = defaultdict(set)
+    for sources, targets in edge_splits:
+        for src, tgt in zip(sources.tolist(), targets.tolist()):
+            targets_by_source[src].add(tgt)
+    return {src: frozenset(targets) for src, targets in targets_by_source.items()}
+
+
+def sample_targets_excluding_lookup(sources, num_nodes, blocked_targets_by_source, device):
+    """
+    Sample random targets while excluding exact directed pairs present in the blocked lookup.
+    This is intentionally limited to the provided blocked splits (e.g. val/test), not train.
+    """
+    sampled = torch.randint(0, num_nodes, (len(sources),), device=device)
+    if len(sources) == 0 or not blocked_targets_by_source:
+        return sampled
+
+    source_list = sources.detach().cpu().tolist()
+    sampled_list = sampled.detach().cpu().tolist()
+    pending_indices = list(range(len(source_list)))
+
+    while pending_indices:
+        collision_indices = [
+            idx for idx in pending_indices
+            if sampled_list[idx] in blocked_targets_by_source.get(source_list[idx], ())
+        ]
+        if not collision_indices:
+            break
+
+        resampled = torch.randint(0, num_nodes, (len(collision_indices),), device=device)
+        sampled[collision_indices] = resampled
+        resampled_list = resampled.detach().cpu().tolist()
+        for idx, tgt in zip(collision_indices, resampled_list):
+            sampled_list[idx] = tgt
+        pending_indices = collision_indices
+
+    return sampled
+
 class SNAPBitcoinDataset(Dataset):
     def __init__(self, data_type='alpha', split='train', root_dir='./data', transform=None, seed=42):
         """
@@ -203,7 +244,7 @@ class SNAPBitcoinDataset(Dataset):
 
 def get_dataloaders(data_type='alpha', batch_size=1024, root_dir='./data', seed=42):
     """
-    Returns train, val, and test DataLoaders for the specified SNAP dataset.
+    Returns train, val, and test DataLoaders plus split-aware sampling metadata.
     """
     print(f"Initializing {data_type} dataset splits with seed {seed}...")
     train_ds = SNAPBitcoinDataset(data_type=data_type, split='train', root_dir=root_dir, seed=seed)
@@ -213,17 +254,25 @@ def get_dataloaders(data_type='alpha', batch_size=1024, root_dir='./data', seed=
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
-    
-    return train_loader, val_loader, test_loader, train_ds.num_nodes
+
+    sampling_metadata = {
+        'heldout_targets_by_source': _build_target_lookup_from_tensors(
+            (val_ds.sources, val_ds.targets),
+            (test_ds.sources, test_ds.targets),
+        )
+    }
+
+    return train_loader, val_loader, test_loader, train_ds.num_nodes, sampling_metadata
 
 if __name__ == "__main__":
     print("Testing SNAP Bitcoin Dataloader (Alpha)")
-    train_loader, val_loader, test_loader, num_nodes = get_dataloaders('alpha', batch_size=1024)
+    train_loader, val_loader, test_loader, num_nodes, sampling_metadata = get_dataloaders('alpha', batch_size=1024)
     
     print(f"\nTotal Unique Nodes: {num_nodes}")
     print(f"Train edges: {len(train_loader.dataset)} ({len(train_loader)} batches)")
     print(f"Val edges:   {len(val_loader.dataset)} ({len(val_loader)} batches)")
     print(f"Test edges:  {len(test_loader.dataset)} ({len(test_loader)} batches)")
+    print(f"Held-out source nodes tracked for sampling: {len(sampling_metadata['heldout_targets_by_source'])}")
     
     print("\n--- Split Verification ---")
     print("Verification Passed: Using pair-aware stratified split (70/10/20) by directed edge.")

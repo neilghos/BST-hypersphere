@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 from anchor import initialize_hypersphere_anchors
 from BSTspace import Stage1_BST_Optimizer
-from dataloader import get_dataloaders
+from dataloader import get_dataloaders, sample_targets_excluding_lookup
 from nodealligner import Stage2_NodeAligner, stage2_pairwise_auc_loss, HierarchicalPredictor
 from evaluator import SNAPEval, evaluate_pipeline
 
@@ -37,7 +37,10 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
     """Run one full Stage 2 + Stage 3 experiment and return test metrics."""
     set_seed(seed)
     
-    train_loader, val_loader, test_loader, num_nodes = get_dataloaders(dataset, batch_size=1024, seed=seed)
+    train_loader, val_loader, test_loader, num_nodes, sampling_metadata = get_dataloaders(
+        dataset, batch_size=1024, seed=seed
+    )
+    heldout_targets_by_source = sampling_metadata['heldout_targets_by_source']
     
     aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)
     optimizer_s2 = torch.optim.Adam(aligner.parameters(), lr=0.005)
@@ -59,7 +62,9 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
             
             u_pos = sources[pos_mask]
             v_pos = targets[pos_mask]
-            v_neg = torch.randint(0, num_nodes, (len(u_pos),), device=device)
+            v_neg = sample_targets_excluding_lookup(
+                u_pos, num_nodes, heldout_targets_by_source, device
+            )
             
             optimizer_s2.zero_grad()
             u_embeds = aligner(u_pos)
@@ -95,7 +100,9 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
             optimizer_s3.zero_grad()
             
             num_edges = len(sources)
-            fake_targets = torch.randint(0, num_nodes, (num_edges,), device=device)
+            fake_targets = sample_targets_excluding_lookup(
+                sources, num_nodes, heldout_targets_by_source, device
+            )
             
             all_u = torch.cat([sources, sources], dim=0)
             all_v = torch.cat([targets, fake_targets], dim=0)

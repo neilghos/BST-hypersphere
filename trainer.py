@@ -4,7 +4,7 @@ from anchor import initialize_hypersphere_anchors
 from BSTspace import Stage1_BST_Optimizer
 
 import torch.nn as nn
-from dataloader import get_dataloaders
+from dataloader import get_dataloaders, sample_targets_excluding_lookup
 from nodealligner import Stage2_NodeAligner, stage2_pure_positive_loss, stage2_pairwise_auc_loss, HierarchicalPredictor
 from evaluator import SNAPEval, evaluate_pipeline
 
@@ -22,7 +22,7 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, default='otc', choices=['alpha', 'otc', 'epinions', 'wiki-rfa', 'wiki-elec', 'all'])
     args = parser.parse_args()
     
-    datasets_to_run = ['alpha', 'otc', 'epinions', 'wiki-rfa', 'wiki-elec'] if args.dataset == 'all' else [args.dataset]
+    datasets_to_run = ['alpha', 'otc', 'wiki-elec', 'wiki-rfa','epinions' ] if args.dataset == 'all' else [args.dataset]
 
     set_seed(42)
     
@@ -86,7 +86,8 @@ if __name__ == "__main__":
         print("   STAGE 2: TRANSDUCTIVE NODE ALIGNMENT")
         print("=============================================")
 
-        train_loader, val_loader, test_loader, num_nodes = get_dataloaders(ds_name, batch_size=1024)
+        train_loader, val_loader, test_loader, num_nodes, sampling_metadata = get_dataloaders(ds_name, batch_size=1024)
+        heldout_targets_by_source = sampling_metadata['heldout_targets_by_source']
 
         aligner = Stage2_NodeAligner(num_nodes=num_nodes, raw_embed_dim=128, hypersphere_dim=384).to(device)
         optimizer_s2 = torch.optim.Adam(aligner.parameters(), lr=0.005)
@@ -110,7 +111,9 @@ if __name__ == "__main__":
                 u_pos = sources[pos_mask]
                 v_pos = targets[pos_mask]
 
-                v_neg = torch.randint(0, num_nodes, (len(u_pos),), device=device)
+                v_neg = sample_targets_excluding_lookup(
+                    u_pos, num_nodes, heldout_targets_by_source, device
+                )
 
                 optimizer_s2.zero_grad()
 
@@ -152,7 +155,9 @@ if __name__ == "__main__":
                 optimizer_s3.zero_grad()
 
                 num_edges = len(sources)
-                fake_targets = torch.randint(0, num_nodes, (num_edges,), device=device)
+                fake_targets = sample_targets_excluding_lookup(
+                    sources, num_nodes, heldout_targets_by_source, device
+                )
 
                 all_u = torch.cat([sources, sources], dim=0)
                 all_v = torch.cat([targets, fake_targets], dim=0)
