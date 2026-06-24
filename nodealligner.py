@@ -109,7 +109,7 @@ def stage2_signed_bst_loss(u_embeds, v_embeds, v_neg_embeds, ratings, anchors, z
         # Pull targets of negative edges toward P2 (Malicious)
         loss_neg_semantic = (1.0 - F.cosine_similarity(v_embeds[neg_mask], P2.unsqueeze(0), dim=-1)).mean()
         
-    # Combine losses (semantic given smaller weight to act as a gravity regularizer)
+    # Combine losses (semantic given smaller weight)
     return loss_pos_struct + loss_neg_struct + 0.1 * (loss_pos_semantic + loss_neg_semantic)
 
 class HierarchicalPredictor(nn.Module):

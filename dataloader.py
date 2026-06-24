@@ -259,14 +259,11 @@ class SNAPBitcoinDataset(Dataset):
         self.ratings = torch.tensor(df['rating'].values, dtype=torch.float32)
         if 'time' in df.columns:
             try:
-                # Some datasets store timestamps as parseable strings; convert them
-                # to Unix seconds so every sample has a uniform integer time field.
                 if df['time'].dtype == object:
                     df['time'] = pd.to_datetime(df['time'], errors='coerce').astype('int64') // 10**9
                 self.times = torch.tensor(df['time'].values, dtype=torch.long)
             except Exception:
                 # Time is not currently used by the model, so fall back to zeros
-                # rather than failing preprocessing over timestamp formatting.
                 self.times = torch.zeros(len(df), dtype=torch.long)
         else:
             self.times = torch.zeros(len(df), dtype=torch.long)
