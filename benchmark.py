@@ -38,9 +38,10 @@ def snapshot_state_dict(module):
     return {key: value.detach().cpu().clone() for key, value in module.state_dict().items()}
 
 
-def run_single_experiment(dataset, seed, device, frozen_anchors):
-    """Run one full Stage 2 + Stage 3 experiment and return test metrics."""
+def run_single_dataset(dataset, seed, device, frozen_anchors):
+    """Run full Stage 2 + Stage 3 experiment for a dataset and return test metrics."""
     set_seed(seed)
+    
     zero_positive = dataset in {'wiki-rfa', 'wiki-elec'}
     
     train_loader, val_loader, test_loader, num_nodes, sampling_metadata = get_dataloaders(
@@ -89,7 +90,7 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
     zero_label_policy = 'positive' if zero_positive else 'negative'
     evaluator = SNAPEval(zero_label_policy=zero_label_policy)
     
-    epochs_s3 = 15
+    epochs_s3 = 10
     best_val_acc = float('-inf')
     best_val_threshold = 0.0
     best_epoch = 0
@@ -185,7 +186,7 @@ def run_single_experiment(dataset, seed, device, frozen_anchors):
 
 def main():
     parser = argparse.ArgumentParser(description="BST Multi-Seed Benchmark Runner")
-    parser.add_argument('--dataset', type=str, default='otc', choices=['alpha', 'otc', 'epinions', 'slashdot', 'wiki-rfa', 'wiki-elec'])
+    parser.add_argument('--dataset', type=str, default='otc', choices=['alpha', 'otc', 'epinions', 'slashdot', 'wiki-rfa', 'wiki-elec', 'all'])
     parser.add_argument('--runs', type=int, default=10)
     parser.add_argument('--output_dir', type=str, default='./results')
     args = parser.parse_args()
@@ -193,30 +194,15 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     csv_path = os.path.join(args.output_dir, f"benchmark_{args.dataset}_{args.runs}runs.csv")
     
+    datasets_to_run = ['alpha', 'otc', 'slashdot', 'wiki-elec', 'wiki-rfa', 'epinions'] if args.dataset == 'all' else [args.dataset]
+    
     print("=" * 60)
     print(f"  BST BENCHMARK: {args.dataset.upper()} | {args.runs} RUNS")
-    print("=" * 60)
-    
-    anchor_embeddings = initialize_hypersphere_anchors()
-    bst_model = Stage1_BST_Optimizer(anchor_embeddings, neg_margin=0.0)
-    optimizer = torch.optim.Adam(bst_model.parameters(), lr=0.01)
-    
-    print("\n--- Stage 1: BST Physics (shared across all runs) ---")
-    for epoch in range(500):
-        optimizer.zero_grad()
-        loss = bst_model()
-        loss.backward()
-        optimizer.step()
-    print(f"Stage 1 complete. Final loss: {loss.item():.4f}")
-    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    final_anchors = bst_model.get_normalized_anchors()
-    frozen_anchors = {name: tensor.detach().to(device) for name, tensor in final_anchors.items()}
-    
     seeds = list(range(42, 42 + args.runs))
-    all_results = []
+    all_results = {ds: [] for ds in datasets_to_run}
     
-    fieldnames = ['run', 'seed', 'acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']
+    fieldnames = ['dataset', 'run', 'seed', 'acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']
     with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -226,47 +212,66 @@ def main():
         print(f"  RUN {run_idx + 1}/{args.runs} | Seed: {seed}")
         print(f"{'='*60}")
         
-        start_time = time.time()
-        metrics = run_single_experiment(args.dataset, seed, device, frozen_anchors)
-        elapsed = time.time() - start_time
+        # --- Stage 1 ---
+        set_seed(seed)
+        anchor_embeddings = initialize_hypersphere_anchors()
+        bst_model = Stage1_BST_Optimizer(anchor_embeddings, neg_margin=0.0)
+        optimizer_s1 = torch.optim.Adam(bst_model.parameters(), lr=0.01)
         
-        row = {
-            'run': run_idx + 1,
-            'seed': seed,
-            'acc': metrics['acc'],
-            'f1_macro': metrics['f1_macro'],
-            'f1_pos': metrics['f1_pos'],
-            'f1_neg': metrics['f1_neg'],
-            'auc': metrics['auc']
-        }
-        all_results.append(row)
+        for epoch in range(500):
+            optimizer_s1.zero_grad()
+            loss = bst_model()
+            loss.backward()
+            optimizer_s1.step()
+            
+        final_anchors = bst_model.get_normalized_anchors()
+        frozen_anchors = {name: tensor.detach().to(device) for name, tensor in final_anchors.items()}
         
-        with open(csv_path, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writerow(row)
-        
-        print(f"  Run {run_idx + 1} done in {elapsed:.1f}s | AUC: {metrics['auc']:.4f} | F1_NEG: {metrics['f1_neg']:.4f}")
+        for ds in datasets_to_run:
+            start_time = time.time()
+            metrics = run_single_dataset(ds, seed, device, frozen_anchors)
+            elapsed = time.time() - start_time
+            
+            row = {
+                'dataset': ds,
+                'run': run_idx + 1,
+                'seed': seed,
+                'acc': metrics['acc'],
+                'f1_macro': metrics['f1_macro'],
+                'f1_pos': metrics['f1_pos'],
+                'f1_neg': metrics['f1_neg'],
+                'auc': metrics['auc']
+            }
+            all_results[ds].append(row)
+            
+            with open(csv_path, 'a', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writerow(row)
+            
+            print(f"  [{ds}] Run {run_idx + 1} done in {elapsed:.1f}s | AUC: {metrics['auc']:.4f} | F1_NEG: {metrics['f1_neg']:.4f}")
     
     print("\n" + "=" * 60)
     print("  FINAL RESULTS (mean ± std)")
     print("=" * 60)
     
-    for metric_name in ['acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']:
-        values = [r[metric_name] for r in all_results]
-        mean_val = np.mean(values)
-        std_val = np.std(values)
-        print(f"  {metric_name.upper():10s}: {mean_val:.4f} ± {std_val:.4f}")
-    
     with open(csv_path, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-        summary_mean = {'run': 'MEAN', 'seed': '-'}
-        summary_std = {'run': 'STD', 'seed': '-'}
-        for metric_name in ['acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']:
-            values = [r[metric_name] for r in all_results]
-            summary_mean[metric_name] = f"{np.mean(values):.4f}"
-            summary_std[metric_name] = f"{np.std(values):.4f}"
-        writer.writerow(summary_mean)
-        writer.writerow(summary_std)
+        
+        for ds in datasets_to_run:
+            ds_results = all_results[ds]
+            print(f"--- {ds.upper()} ---")
+            summary_mean = {'dataset': ds, 'run': 'MEAN', 'seed': '-'}
+            summary_std = {'dataset': ds, 'run': 'STD', 'seed': '-'}
+            for metric_name in ['acc', 'f1_macro', 'f1_pos', 'f1_neg', 'auc']:
+                values = [r[metric_name] for r in ds_results]
+                mean_val = np.mean(values)
+                std_val = np.std(values)
+                print(f"  {metric_name.upper():10s}: {mean_val:.4f} ± {std_val:.4f}")
+                summary_mean[metric_name] = f"{mean_val:.4f}"
+                summary_std[metric_name] = f"{std_val:.4f}"
+            
+            writer.writerow(summary_mean)
+            writer.writerow(summary_std)
     
     print(f"\nResults saved to: {csv_path}")
 

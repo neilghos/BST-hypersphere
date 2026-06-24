@@ -22,56 +22,57 @@ class Stage2_NodeAligner(nn.Module):
         return F.normalize(projected_x, p=2, dim=-1)
     
 
-def stage2_pure_positive_loss(u_embeds, v_embeds, ratings, anchors):
-    """
-    u_embeds: [batch_size, 384] - Source node embeddings
-    v_embeds: [batch_size, 384] - Target node embeddings
-    ratings: [batch_size] - Edge weights (-10 to 10)
-    anchors: dict of frozen Stage 1 tensors
-    """
-    P1 = anchors["P1"].to(u_embeds.device) # Trust Anchor
-    P2 = anchors["P2"].to(u_embeds.device) # Malicious Anchor
+#alternate loss functions
+# def stage2_pure_positive_loss(u_embeds, v_embeds, ratings, anchors):
+#     """
+#     u_embeds: [batch_size, 384] - Source node embeddings
+#     v_embeds: [batch_size, 384] - Target node embeddings
+#     ratings: [batch_size] - Edge weights (-10 to 10)
+#     anchors: dict of frozen Stage 1 tensors
+#     """
+#     P1 = anchors["P1"].to(u_embeds.device) # Trust Anchor
+#     P2 = anchors["P2"].to(u_embeds.device) # Malicious Anchor
     
-    weights = torch.abs(ratings) / 10.0
+#     weights = torch.abs(ratings) / 10.0
     
-    pos_mask = ratings > 0
-    neg_mask = ratings < 0
+#     pos_mask = ratings > 0
+#     neg_mask = ratings < 0
     
-    total_loss = 0.0
+#     total_loss = 0.0
     
-    if pos_mask.any():
-        u_pos = u_embeds[pos_mask]
-        v_pos = v_embeds[pos_mask]
-        w_pos = weights[pos_mask]
+#     if pos_mask.any():
+#         u_pos = u_embeds[pos_mask]
+#         v_pos = v_embeds[pos_mask]
+#         w_pos = weights[pos_mask]
         
-        pull_u_P1 = 1.0 - F.cosine_similarity(u_pos, P1.unsqueeze(0), dim=-1)
-        pull_v_P1 = 1.0 - F.cosine_similarity(v_pos, P1.unsqueeze(0), dim=-1)
+#         pull_u_P1 = 1.0 - F.cosine_similarity(u_pos, P1.unsqueeze(0), dim=-1)
+#         pull_v_P1 = 1.0 - F.cosine_similarity(v_pos, P1.unsqueeze(0), dim=-1)
         
-        total_loss += torch.sum(w_pos * (pull_u_P1 + pull_v_P1))
+#         total_loss += torch.sum(w_pos * (pull_u_P1 + pull_v_P1))
         
-    if neg_mask.any():
-        u_neg = u_embeds[neg_mask]
-        v_neg = v_embeds[neg_mask]
-        w_neg = weights[neg_mask]
+#     if neg_mask.any():
+#         u_neg = u_embeds[neg_mask]
+#         v_neg = v_embeds[neg_mask]
+#         w_neg = weights[neg_mask]
         
-        pull_u_P1 = 1.0 - F.cosine_similarity(u_neg, P1.unsqueeze(0), dim=-1)
-        pull_v_P2 = 1.0 - F.cosine_similarity(v_neg, P2.unsqueeze(0), dim=-1)
+#         pull_u_P1 = 1.0 - F.cosine_similarity(u_neg, P1.unsqueeze(0), dim=-1)
+#         pull_v_P2 = 1.0 - F.cosine_similarity(v_neg, P2.unsqueeze(0), dim=-1)
         
-        total_loss += torch.sum(w_neg * (pull_u_P1 + pull_v_P2))
+#         total_loss += torch.sum(w_neg * (pull_u_P1 + pull_v_P2))
         
-    return total_loss / len(ratings)
+#     return total_loss / len(ratings)
 
 
-def stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, anchors, margin=0.2):
-    pos_scores = F.cosine_similarity(u_embeds, v_pos_embeds, dim=-1)
-    neg_scores = F.cosine_similarity(u_embeds, v_neg_embeds, dim=-1)
+# def stage2_pairwise_auc_loss(u_embeds, v_pos_embeds, v_neg_embeds, anchors, margin=0.2):
+#     pos_scores = F.cosine_similarity(u_embeds, v_pos_embeds, dim=-1)
+#     neg_scores = F.cosine_similarity(u_embeds, v_neg_embeds, dim=-1)
     
-    auc_loss = torch.relu(margin - (pos_scores - neg_scores)).mean()
+#     auc_loss = torch.relu(margin - (pos_scores - neg_scores)).mean()
     
-    P1 = anchors["P1"].to(u_embeds.device)
-    gravity_loss = (1.0 - F.cosine_similarity(u_embeds, P1.unsqueeze(0), dim=-1)).mean()
+#     P1 = anchors["P1"].to(u_embeds.device)
+#     gravity_loss = (1.0 - F.cosine_similarity(u_embeds, P1.unsqueeze(0), dim=-1)).mean()
     
-    return auc_loss + (0.1 * gravity_loss)
+#     return auc_loss + (0.1 * gravity_loss)
 
 def stage2_signed_bst_loss(u_embeds, v_embeds, v_neg_embeds, ratings, anchors, zero_positive=False, margin=0.2):
     """
