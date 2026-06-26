@@ -239,6 +239,11 @@ if __name__ == "__main__":
             split_name="Test", threshold=best_val_threshold
         )
         
+        from interpretability import run_interpretability_module
+        run_interpretability_module(
+            aligner, predictor, test_loader, device, frozen_anchors, best_val_threshold, zero_positive
+        )
+        
         row = {
             'dataset': ds_name,
             'acc': test_metrics['acc'],
