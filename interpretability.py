@@ -53,10 +53,31 @@ def get_node_profile(node_id, embed, anchors, ambiguity_eps=AMBIGUITY_EPS):
     return profile, alignment
 
 
-def _binary_sbt_heuristic(u_align, v_align):
-    if u_align == "Ambiguous" or v_align == "Ambiguous":
+def _multi_anchor_sbt_heuristic(u_embed, v_embed, anchors, ambiguity_eps=AMBIGUITY_EPS):
+    predictions = []
+    # We restrict the triadic heuristic to just the two primary semantic poles
+    for anchor_name in ["P1", "P2"]:
+        if anchor_name not in anchors:
+            continue
+            
+        anchor_embed = anchors[anchor_name]
+        sim_u = F.cosine_similarity(u_embed, anchor_embed, dim=0).item()
+        sim_v = F.cosine_similarity(v_embed, anchor_embed, dim=0).item()
+        
+        if abs(sim_u) < ambiguity_eps or abs(sim_v) < ambiguity_eps:
+            continue
+            
+        sign_u = 1 if sim_u > 0 else -1
+        sign_v = 1 if sim_v > 0 else -1
+        predictions.append(sign_u * sign_v)
+        
+    if not predictions:
         return None
-    return 1 if u_align == v_align else 0
+        
+    first_pred = predictions[0]
+    if all(p == first_pred for p in predictions):
+        return 1 if first_pred == 1 else 0
+    return None
 
 
 def _format_edge_case(
@@ -75,9 +96,9 @@ def _format_edge_case(
 
     true_str = "positive" if true_label == 1 else "negative"
     pred_str = "positive" if pred_label == 1 else "negative"
-    sbt_expected = _binary_sbt_heuristic(u_align, v_align)
+    sbt_expected = _multi_anchor_sbt_heuristic(u_embed, v_embed, anchors)
     if sbt_expected is None:
-        sbt_expected_str = "underdetermined"
+        sbt_expected_str = "underdetermined (P1/P2 conflict)"
     else:
         sbt_expected_str = "positive" if sbt_expected == 1 else "negative"
 
@@ -86,7 +107,7 @@ def _format_edge_case(
         f"  edge: {u_idx} -> {v_idx}",
         f"  ground truth: {true_str}",
         f"  prediction: {pred_str}",
-        f"  binary sbt heuristic: {sbt_expected_str}",
+        f"  triadic sbt heuristic: {sbt_expected_str}",
         f"  sign prob: {sign_prob:.4f}",
         f"  source profile: {u_profile}",
         f"  target profile: {v_profile}",
@@ -136,7 +157,7 @@ def create_bst_consistency_heatmap(
     ax.set_xticks([0, 1], labels=["BST-consistent", "BST-inconsistent"])
     ax.set_yticks([0, 1], labels=["Ground truth: positive", "Ground truth: negative"])
     ax.set_title(
-        f"Pole-Induced Triad Consistency on Held-Out Test Edges ({ds_name})",
+        f"Multi-Anchor Triad Consistency on Held-Out Test Edges ({ds_name})",
         fontsize=15,
         pad=12,
     )
@@ -492,7 +513,7 @@ def run_interpretability_module(
 
                 _, u_align = get_node_profile(u, u_embeds[idx], anchors)
                 _, v_align = get_node_profile(v, v_embeds[idx], anchors)
-                heuristic_label = _binary_sbt_heuristic(u_align, v_align)
+                heuristic_label = _multi_anchor_sbt_heuristic(u_embeds[idx], v_embeds[idx], anchors)
 
                 total_edges += 1
                 node_stats[u]["total"] += 1
@@ -610,18 +631,18 @@ def run_interpretability_module(
     lines.append(f"XAI Report: {ds_name}")
     lines.append("")
 
-    lines.append("Anchor-Based SBT Heuristic Analysis")
+    lines.append("Multi-Anchor Triadic SBT Heuristic Analysis")
     lines.append("  note: all values below are computed on the held-out test split only")
-    lines.append("  note: the heuristic uses only the P1/P2 polarity frame")
-    lines.append("  note: P1 and P2 are latent polarity poles, not observed node roles")
+    lines.append("  note: the heuristic enforces pure triadic consistency across P1 (Pole 1) and P2 (Pole 2) anchors")
+    lines.append("  note: ambiguous or geometrically frustrated edges are excluded")
     lines.append(f"  total test edges evaluated: {total_edges}")
     lines.append(f"  heuristic-covered test edges: {heuristic_covered_edges}")
     lines.append(
-        f"  binary heuristic agreement with ground truth: "
+        f"  P1/P2 heuristic agreement with ground truth: "
         f"{heuristic_gt_agree / max(1, heuristic_covered_edges) * 100:.2f}%"
     )
     lines.append(
-        f"  model agreement with binary heuristic: "
+        f"  model agreement with P1/P2 heuristic: "
         f"{heuristic_model_agree / max(1, heuristic_covered_edges) * 100:.2f}%"
     )
     if heuristic_gt_correct_total > 0:
