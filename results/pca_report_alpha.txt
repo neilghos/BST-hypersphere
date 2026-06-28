@@ -1,11 +1,11 @@
 PCA Alignment Analysis: ALPHA
 ========================================
 Explained Variance:
-  PC1: 25.77%
-  PC2: 14.83%
-  PC3: 11.93%
-  Total (Top 3): 52.53%
+  PC1: 25.91%
+  PC2: 14.84%
+  PC3: 12.46%
+  Total (Top 3): 53.22%
 
 Alignment with Anchors (Signed Cosine Similarity):
-  P1 -> PC1: +0.8743 | PC2: +0.3759 | PC3: +0.1243
-  P2 -> PC1: -0.8743 | PC2: -0.3759 | PC3: -0.1245
+  P1 -> PC1: +0.8618 | PC2: -0.4021 | PC3: +0.1411
+  P2 -> PC1: -0.8618 | PC2: +0.4021 | PC3: -0.1413

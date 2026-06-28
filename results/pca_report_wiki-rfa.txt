@@ -1,11 +1,11 @@
 PCA Alignment Analysis: WIKI-RFA
 ========================================
 Explained Variance:
-  PC1: 49.77%
-  PC2: 15.42%
-  PC3: 8.77%
-  Total (Top 3): 73.96%
+  PC1: 49.69%
+  PC2: 16.15%
+  PC3: 9.39%
+  Total (Top 3): 75.23%
 
 Alignment with Anchors (Signed Cosine Similarity):
-  P1 -> PC1: +0.9973 | PC2: +0.0689 | PC3: +0.0113
-  P2 -> PC1: -0.9973 | PC2: -0.0689 | PC3: -0.0113
+  P1 -> PC1: +0.9980 | PC2: -0.0527 | PC3: -0.0073
+  P2 -> PC1: -0.9981 | PC2: +0.0527 | PC3: +0.0073

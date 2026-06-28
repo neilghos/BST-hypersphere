@@ -1,11 +1,11 @@
 PCA Alignment Analysis: EPINIONS
 ========================================
 Explained Variance:
-  PC1: 41.94%
-  PC2: 19.63%
-  PC3: 12.72%
-  Total (Top 3): 74.29%
+  PC1: 41.58%
+  PC2: 18.72%
+  PC3: 13.05%
+  Total (Top 3): 73.35%
 
 Alignment with Anchors (Signed Cosine Similarity):
-  P1 -> PC1: +0.9811 | PC2: +0.1885 | PC3: -0.0127
-  P2 -> PC1: -0.9811 | PC2: -0.1884 | PC3: +0.0128
+  P1 -> PC1: +0.9711 | PC2: +0.2313 | PC3: +0.0519
+  P2 -> PC1: -0.9711 | PC2: -0.2312 | PC3: -0.0520

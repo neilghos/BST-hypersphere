@@ -302,9 +302,10 @@ def get_dataloaders(data_type='alpha', batch_size=1024, root_dir='./data', seed=
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
     sampling_metadata = {
-        # Stage 2/3 sampling blocks validation and test directed pairs so held-out
-        # edges are never injected back as random negatives during training.
+        # Stage 2/3 sampling blocks ALL real directed pairs (train + val + test)
+        # so real edges are never accidentally sampled as fake negatives.
         'heldout_targets_by_source': _build_target_lookup_from_tensors(
+            (train_ds.sources, train_ds.targets),
             (val_ds.sources, val_ds.targets),
             (test_ds.sources, test_ds.targets),
         )

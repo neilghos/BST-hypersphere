@@ -5,15 +5,15 @@ Multi-Anchor Triadic SBT Heuristic Analysis
   note: the heuristic enforces pure triadic consistency across P1 (Pole 1) and P2 (Pole 2) anchors
   note: ambiguous or geometrically frustrated edges are excluded
   total test edges evaluated: 39308
-  heuristic-covered test edges: 35446
-  P1/P2 heuristic agreement with ground truth: 64.85%
-  model agreement with P1/P2 heuristic: 65.17%
-  model accuracy on heuristic-consistent edges: 87.61%
-  model accuracy on heuristic-inconsistent edges: 76.22%
-  test-split homophily rate: 55.89%
-  test-split heterophily rate: 44.11%
-  mean test-edge cosine similarity: +0.1643
-  mean positive test-edge cosine similarity: +0.2385
+  heuristic-covered test edges: 34822
+  P1/P2 heuristic agreement with ground truth: 64.60%
+  model agreement with P1/P2 heuristic: 65.31%
+  model accuracy on heuristic-consistent edges: 87.89%
+  model accuracy on heuristic-inconsistent edges: 75.88%
+  test-split homophily rate: 55.62%
+  test-split heterophily rate: 44.38%
+  mean test-edge cosine similarity: +0.1692
+  mean positive test-edge cosine similarity: +0.2441
   bst consistency heatmap: results\dataset_wiki-rfa_bst_consistency_heatmap.png
 
   Example Edges
@@ -23,59 +23,59 @@ Multi-Anchor Triadic SBT Heuristic Analysis
     ground truth: positive
     prediction: positive
     triadic sbt heuristic: negative
-    sign prob: 0.9901
-    source profile: Node 1: P1=+0.568, P2=-0.568, aligned=Group Pole 1 (P1)
-    target profile: Node 488: P1=-0.107, P2=+0.107, aligned=Group Pole 2 (P2)
+    sign prob: 0.9736
+    source profile: Node 1: P1=+0.582, P2=-0.582, aligned=Group Pole 1 (P1)
+    target profile: Node 488: P1=-0.069, P2=+0.069, aligned=Group Pole 2 (P2)
 
   True Negative Example
     edge: 121 -> 488
     ground truth: negative
     prediction: negative
-    triadic sbt heuristic: negative
-    sign prob: 0.0916
-    source profile: Node 121: P1=+0.126, P2=-0.126, aligned=Group Pole 1 (P1)
-    target profile: Node 488: P1=-0.107, P2=+0.107, aligned=Group Pole 2 (P2)
+    triadic sbt heuristic: underdetermined (P1/P2 conflict)
+    sign prob: 0.1797
+    source profile: Node 121: P1=+0.050, P2=-0.050, aligned=Group Pole 1 (P1)
+    target profile: Node 488: P1=-0.069, P2=+0.069, aligned=Group Pole 2 (P2)
 
   False Positive Example
     edge: 129 -> 488
     ground truth: negative
     prediction: positive
     triadic sbt heuristic: positive
-    sign prob: 0.9903
-    source profile: Node 129: P1=-0.110, P2=+0.110, aligned=Group Pole 2 (P2)
-    target profile: Node 488: P1=-0.107, P2=+0.107, aligned=Group Pole 2 (P2)
+    sign prob: 0.9940
+    source profile: Node 129: P1=-0.142, P2=+0.142, aligned=Group Pole 2 (P2)
+    target profile: Node 488: P1=-0.069, P2=+0.069, aligned=Group Pole 2 (P2)
 
   False Negative Example
-    edge: 163 -> 239
+    edge: 259 -> 331
     ground truth: positive
     prediction: negative
     triadic sbt heuristic: negative
-    sign prob: 0.2756
-    source profile: Node 163: P1=+0.804, P2=-0.804, aligned=Group Pole 1 (P1)
-    target profile: Node 239: P1=-0.278, P2=+0.278, aligned=Group Pole 2 (P2)
+    sign prob: 0.0671
+    source profile: Node 259: P1=-0.431, P2=+0.431, aligned=Group Pole 2 (P2)
+    target profile: Node 331: P1=+0.105, P2=-0.105, aligned=Group Pole 1 (P1)
 
 Local Echo Chamber Heuristic
   note: node-level labels below are heuristic and induced from the test split
-  mild homophily threshold: 55.89%
-  extreme homophily threshold: 75.89%
-  density threshold: +0.2385
+  mild homophily threshold: 55.62%
+  extreme homophily threshold: 75.62%
+  density threshold: +0.2441
 
   Node 2128
     alignment: Group Pole 1 (P1)
     positive outgoing targets: 180
     negative outgoing targets: 34
-    in-group homophily: 67.22%
+    in-group homophily: 66.11%
     out-group hostility: 91.18%
-    spatial density: +0.2921
+    spatial density: +0.2990
     heuristic status: Mild Echo Chamber
 
   Node 899
     alignment: Group Pole 1 (P1)
     positive outgoing targets: 163
     negative outgoing targets: 24
-    in-group homophily: 81.60%
+    in-group homophily: 80.98%
     out-group hostility: 91.67%
-    spatial density: +0.5212
+    spatial density: +0.4941
     heuristic status: Extreme Echo Chamber
 
   Node 3124
@@ -84,16 +84,16 @@ Local Echo Chamber Heuristic
     negative outgoing targets: 10
     in-group homophily: 72.50%
     out-group hostility: 90.00%
-    spatial density: +0.2663
+    spatial density: +0.3138
     heuristic status: Mild Echo Chamber
 
   Node 582
     alignment: Group Pole 1 (P1)
     positive outgoing targets: 121
     negative outgoing targets: 31
-    in-group homophily: 66.94%
-    out-group hostility: 83.87%
-    spatial density: +0.2421
+    in-group homophily: 64.46%
+    out-group hostility: 87.10%
+    spatial density: +0.2296
     heuristic status: Mild Echo Chamber
 
   Node 42
@@ -101,57 +101,57 @@ Local Echo Chamber Heuristic
     positive outgoing targets: 109
     negative outgoing targets: 26
     in-group homophily: 56.88%
-    out-group hostility: 96.15%
-    spatial density: +0.3447
+    out-group hostility: 92.31%
+    spatial density: +0.3339
     heuristic status: Mild Echo Chamber
 
 Geometric Random Walk Heuristic
   note: walks run on the held-out test adjacency only
   max steps per walk: 5
   walks per node: 100
-  transition threshold: +0.0643
+  transition threshold: +0.0692
 
   Node 2128
     initial anchor region: Pole 1 attractor region
     out-degree: 213
-    average path length: 2.99
-    dead ends: 64
-    within-pole trajectory purity: 58.55%
-    survival rate: 36.00%
+    average path length: 3.26
+    dead ends: 57
+    within-pole trajectory purity: 58.60%
+    survival rate: 43.00%
     heuristic status: Moderate Pole Retention
 
   Node 899
     initial anchor region: Pole 1 attractor region
     out-degree: 185
-    average path length: 3.38
-    dead ends: 64
-    within-pole trajectory purity: 84.58%
-    survival rate: 36.00%
+    average path length: 3.77
+    dead ends: 51
+    within-pole trajectory purity: 82.43%
+    survival rate: 49.00%
     heuristic status: Strong Pole Retention
 
   Node 3124
     initial anchor region: Pole 1 attractor region
     out-degree: 170
-    average path length: 3.24
-    dead ends: 63
-    within-pole trajectory purity: 82.68%
-    survival rate: 37.00%
+    average path length: 2.93
+    dead ends: 68
+    within-pole trajectory purity: 86.15%
+    survival rate: 32.00%
     heuristic status: Strong Pole Retention
 
   Node 582
     initial anchor region: Pole 1 attractor region
     out-degree: 147
-    average path length: 3.04
-    dead ends: 66
-    within-pole trajectory purity: 80.85%
-    survival rate: 34.00%
-    heuristic status: Strong Pole Retention
+    average path length: 3.67
+    dead ends: 46
+    within-pole trajectory purity: 71.30%
+    survival rate: 54.00%
+    heuristic status: Moderate Pole Retention
 
   Node 42
     initial anchor region: Pole 1 attractor region
     out-degree: 132
-    average path length: 3.12
-    dead ends: 66
-    within-pole trajectory purity: 68.30%
-    survival rate: 34.00%
+    average path length: 3.29
+    dead ends: 62
+    within-pole trajectory purity: 72.17%
+    survival rate: 38.00%
     heuristic status: Moderate Pole Retention
