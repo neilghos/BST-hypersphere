@@ -9,7 +9,7 @@ from nodealligner import Stage2_NodeAligner, stage2_signed_bst_loss, Hierarchica
 from evaluator import SNAPEval, evaluate_pipeline
 
 import numpy as np
-
+from pca_analysis import run_pca_alignment_analysis
 def set_seed(seed=42):
     """Set all random seeds for reproducibility."""
     torch.manual_seed(seed)
@@ -130,6 +130,10 @@ if __name__ == "__main__":
             print(f"Stage 2 | Epoch {epoch + 1:2d}/{epochs_s2} | AUC Loss: {epoch_loss / len(train_loader):.4f}")
 
         print("\nPipeline Complete: The hypersphere is fully populated.")
+        with torch.no_grad():
+            all_node_ids = torch.arange(aligner.node_embeds.num_embeddings, device=device)
+            hypersphere_embeds = aligner(all_node_ids)
+        run_pca_alignment_analysis(hypersphere_embeds, frozen_anchors, ds_name)
 
         print("\nStarting Stage 3")
         predictor = HierarchicalPredictor(embed_dim=384).to(device)

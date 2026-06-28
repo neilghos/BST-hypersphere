@@ -1,0 +1,11 @@
+PCA Alignment Analysis: SLASHDOT
+========================================
+Explained Variance:
+  PC1: 30.74%
+  PC2: 23.92%
+  PC3: 12.44%
+  Total (Top 3): 67.10%
+
+Alignment with Anchors (Signed Cosine Similarity):
+  P1 -> PC1: +0.8040 | PC2: +0.5721 | PC3: -0.1247
+  P2 -> PC1: -0.8040 | PC2: -0.5721 | PC3: +0.1246

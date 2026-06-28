@@ -2,7 +2,7 @@ XAI Report: wiki-rfa
 
 Multi-Anchor Triadic SBT Heuristic Analysis
   note: all values below are computed on the held-out test split only
-  note: the heuristic enforces pure triadic consistency across P1 (Trust) and P2 (Malicious) anchors
+  note: the heuristic enforces pure triadic consistency across P1 (Pole 1) and P2 (Pole 2) anchors
   note: ambiguous or geometrically frustrated edges are excluded
   total test edges evaluated: 39308
   heuristic-covered test edges: 35446
@@ -114,44 +114,44 @@ Geometric Random Walk Heuristic
   Node 2128
     initial anchor region: Pole 1 attractor region
     out-degree: 213
-    average path length: 3.02
+    average path length: 2.99
     dead ends: 64
-    within-pole trajectory purity: 55.65%
+    within-pole trajectory purity: 58.55%
     survival rate: 36.00%
-    heuristic status: Cross-Pole Drift
+    heuristic status: Moderate Pole Retention
 
   Node 899
     initial anchor region: Pole 1 attractor region
     out-degree: 185
-    average path length: 3.51
-    dead ends: 52
-    within-pole trajectory purity: 82.77%
-    survival rate: 48.00%
+    average path length: 3.38
+    dead ends: 64
+    within-pole trajectory purity: 84.58%
+    survival rate: 36.00%
     heuristic status: Strong Pole Retention
 
   Node 3124
     initial anchor region: Pole 1 attractor region
     out-degree: 170
-    average path length: 3.26
-    dead ends: 62
-    within-pole trajectory purity: 79.95%
-    survival rate: 38.00%
+    average path length: 3.24
+    dead ends: 63
+    within-pole trajectory purity: 82.68%
+    survival rate: 37.00%
     heuristic status: Strong Pole Retention
 
   Node 582
     initial anchor region: Pole 1 attractor region
     out-degree: 147
-    average path length: 3.42
-    dead ends: 55
-    within-pole trajectory purity: 87.83%
-    survival rate: 45.00%
+    average path length: 3.04
+    dead ends: 66
+    within-pole trajectory purity: 80.85%
+    survival rate: 34.00%
     heuristic status: Strong Pole Retention
 
   Node 42
     initial anchor region: Pole 1 attractor region
     out-degree: 132
-    average path length: 2.95
-    dead ends: 72
-    within-pole trajectory purity: 73.38%
-    survival rate: 28.00%
+    average path length: 3.12
+    dead ends: 66
+    within-pole trajectory purity: 68.30%
+    survival rate: 34.00%
     heuristic status: Moderate Pole Retention

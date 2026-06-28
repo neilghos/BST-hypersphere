@@ -1,0 +1,11 @@
+PCA Alignment Analysis: OTC
+========================================
+Explained Variance:
+  PC1: 38.12%
+  PC2: 16.28%
+  PC3: 8.42%
+  Total (Top 3): 62.83%
+
+Alignment with Anchors (Signed Cosine Similarity):
+  P1 -> PC1: +0.9292 | PC2: +0.3440 | PC3: +0.0718
+  P2 -> PC1: -0.9292 | PC2: -0.3440 | PC3: -0.0718

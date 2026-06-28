@@ -2,7 +2,7 @@ XAI Report: otc
 
 Multi-Anchor Triadic SBT Heuristic Analysis
   note: all values below are computed on the held-out test split only
-  note: the heuristic enforces pure triadic consistency across P1 (Trust) and P2 (Malicious) anchors
+  note: the heuristic enforces pure triadic consistency across P1 (Pole 1) and P2 (Pole 2) anchors
   note: ambiguous or geometrically frustrated edges are excluded
   total test edges evaluated: 7119
   heuristic-covered test edges: 6711
@@ -114,44 +114,44 @@ Geometric Random Walk Heuristic
   Node 15
     initial anchor region: Pole 1 attractor region
     out-degree: 139
-    average path length: 2.62
-    dead ends: 71
-    within-pole trajectory purity: 73.87%
-    survival rate: 29.00%
+    average path length: 2.61
+    dead ends: 73
+    within-pole trajectory purity: 79.37%
+    survival rate: 27.00%
     heuristic status: Moderate Pole Retention
 
   Node 1877
     initial anchor region: Pole 1 attractor region
     out-degree: 88
-    average path length: 3.62
-    dead ends: 48
-    within-pole trajectory purity: 93.42%
-    survival rate: 52.00%
+    average path length: 3.81
+    dead ends: 41
+    within-pole trajectory purity: 95.45%
+    survival rate: 59.00%
     heuristic status: Strong Pole Retention
 
   Node 2303
     initial anchor region: Pole 1 attractor region
     out-degree: 71
-    average path length: 3.66
-    dead ends: 48
-    within-pole trajectory purity: 94.07%
-    survival rate: 52.00%
+    average path length: 3.59
+    dead ends: 49
+    within-pole trajectory purity: 93.63%
+    survival rate: 51.00%
     heuristic status: Strong Pole Retention
 
   Node 1618
     initial anchor region: Pole 1 attractor region
     out-degree: 70
-    average path length: 3.52
-    dead ends: 52
-    within-pole trajectory purity: 92.27%
-    survival rate: 48.00%
-    heuristic status: Strong Pole Retention
+    average path length: 3.63
+    dead ends: 44
+    within-pole trajectory purity: 87.30%
+    survival rate: 56.00%
+    heuristic status: Moderate Pole Retention
 
   Node 870
     initial anchor region: Pole 1 attractor region
     out-degree: 57
-    average path length: 3.89
-    dead ends: 48
-    within-pole trajectory purity: 91.77%
-    survival rate: 52.00%
+    average path length: 3.76
+    dead ends: 45
+    within-pole trajectory purity: 92.80%
+    survival rate: 55.00%
     heuristic status: Strong Pole Retention

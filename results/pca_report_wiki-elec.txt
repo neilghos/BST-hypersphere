@@ -1,0 +1,11 @@
+PCA Alignment Analysis: WIKI-ELEC
+========================================
+Explained Variance:
+  PC1: 56.28%
+  PC2: 15.19%
+  PC3: 6.61%
+  Total (Top 3): 78.08%
+
+Alignment with Anchors (Signed Cosine Similarity):
+  P1 -> PC1: +0.9980 | PC2: +0.0595 | PC3: -0.0051
+  P2 -> PC1: -0.9980 | PC2: -0.0594 | PC3: +0.0050
